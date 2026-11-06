@@ -13,7 +13,15 @@ int main() {
     PIXELFORMATDESCRIPTOR fmt{};fmt.nSize=sizeof(fmt);fmt.nVersion=1;
     fmt.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL;fmt.iPixelType=PFD_TYPE_RGBA;fmt.cColorBits=32;fmt.cStencilBits=8;
     if(!SetPixelFormat(dc,ChoosePixelFormat(dc,&fmt),&fmt)) return 2;
-    HGLRC context=wglCreateContext(dc);if(!wglMakeCurrent(dc,context)) return 3;
+    HGLRC bootstrap=wglCreateContext(dc);if(!wglMakeCurrent(dc,bootstrap)) return 3;
+    using CreateContext=HGLRC(WINAPI*)(HDC,HGLRC,const int*);
+    auto createContext=(CreateContext)wglGetProcAddress("wglCreateContextAttribsARB");
+    if(!createContext)return 6;
+    const int attributes[]={0x2091,3,0x2092,3,0x9126,1,0};
+    HGLRC context=createContext(dc,nullptr,attributes);
+    if(!context || !wglMakeCurrent(dc,context))return 7;
+    wglDeleteContext(bootstrap);
+    GLint profile=0;glGetIntegerv(0x9126,&profile);if(!(profile&1))return 8;
     using CreateShader=GLuint(APIENTRY*)(GLenum);
     using ShaderSource=void(APIENTRY*)(GLuint,GLsizei,const char*const*,const GLint*);
     using Compile=void(APIENTRY*)(GLuint);
@@ -29,8 +37,8 @@ int main() {
     auto link=(Link)wglGetProcAddress("glLinkProgram");
     auto use=(Use)wglGetProcAddress("glUseProgram");
     if(!createShader||!source||!compile||!createProgram||!attach||!link||!use) return 4;
-    const char* vs="#version 120\nvoid main(){gl_Position=gl_Vertex;}";
-    const char* fs="#version 120\nvoid main(){gl_FragColor=vec4(1,0,0,1);}";
+    const char* vs="#version 330 core\nvoid main(){gl_Position=vec4(0,0,0,1);}";
+    const char* fs="#version 330 core\nout vec4 color;void main(){color=vec4(1,0,0,1);}";
     GLuint v=createShader(0x8B31),f=createShader(0x8B30);source(v,1,&vs,nullptr);source(f,1,&fs,nullptr);compile(v);compile(f);
     GLuint program=createProgram();attach(program,v);attach(program,f);link(program);use(program);
     glViewport(0,0,640,480);glClearColor(0,0,1,1);glClear(GL_COLOR_BUFFER_BIT);
@@ -54,7 +62,7 @@ int main() {
     std::ofstream bmp("work/p0/p1-native-panel.bmp",std::ios::binary);bmp.write((char*)&file,sizeof(file));bmp.write((char*)&info,sizeof(info));bmp.write((char*)rgba.data(),rgba.size());bmp.close();
     s.active=false;glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDisable(GL_STENCIL_TEST);glClear(GL_COLOR_BUFFER_BIT);draw(640,480,nullptr);unsigned char pixel[4];glReadPixels(20,20,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
     bool clear=pixel[0]==0&&pixel[1]==0&&pixel[2]==255;
-    std::printf("render_probe white=%zu dark=%zu shader_restored=%d mask_stencil_restored=%d clear=%d GL_error=%u\n",white,dark,restored==(GLint)program,stateRestored,clear,error);
+    std::printf("render_probe core_profile=%d white=%zu dark=%zu shader_restored=%d mask_stencil_restored=%d clear=%d GL_error=%u\n",profile,white,dark,restored==(GLint)program,stateRestored,clear,error);
     wglMakeCurrent(nullptr,nullptr);wglDeleteContext(context);ReleaseDC(win,dc);DestroyWindow(win);
     return white>100&&dark>10000&&restored==(GLint)program&&stateRestored&&clear&&error==GL_NO_ERROR?0:5;
 }

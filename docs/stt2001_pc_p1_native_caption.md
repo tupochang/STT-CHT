@@ -26,6 +26,14 @@ P1 已編譯連結成功。15 秒無窗口啟動檢查記錄 `STT_P1 hooks=0,0`�
 
 後續使用者截圖仍未見面板，但已記錄匹配與 HUD 回呼執行。新增帶 stencil 拒絕及關閉顏色寫入的原生渲染回歸場景：修正前 `white=0 dark=0`，退出碼 5，能重現「回呼執行、無 GL 錯誤、無面板」。HUD 在繪製期間關閉 stencil／logic-op 並開啟 RGBA 寫入，之後恢復原狀態；修正後再次出現 7,330 個文字像素和 105,310 個背景像素。此測試證實修補可排除這種狀態干擾，遊戲內是否正是該狀態仍待新診斷欄位確認，不能僅憑先前回呼日誌稱已顯示。
 
+## 核心模式根因修正
+
+使用者再次回報未顯示；實際日誌為 `incoming_stencil=0 mask=1111`，因此前述 stencil／顏色遮罩不是這次遊戲內失敗的原因。進一步核對框架 `runtime/src/main.cpp`：它明確要求 OpenGL 3.3 CORE context；舊面板使用 `glBegin`、矩陣堆疊與 `glPushAttrib` 等相容模式 API，核心模式不支援。先前回歸測試卻建立了相容 context，測試環境與遊戲不同，故不足以驗證實際呈現。
+
+面板改為 `#version 330 core` vertex／fragment shader、VAO、`glDrawArrays` 和紋理上傳，不再使用固定管線。`core_panel.h` 保存並恢復程序、VAO、活動紋理、sampler、pixel-unpack buffer、viewport、顏色遮罩與相關啟用狀態。測試也改為強制建立 3.3 CORE context 並檢查 profile bit；結果 `core_profile=1 white=7330 dark=105310 shader_restored=1 mask_stencil_restored=1 clear=1 GL_error=0`。已重建 P1 EXE。
+
+另做了一次 30 秒隱藏視窗啟動探測，未到達台詞／面板掛鉤，不能算遊戲內顯示證據；沒有重播劇情或宣稱畫面通過。一般使用只需關閉舊遊戲並重新執行同一啟動命令，不需要重新開啟 PowerShell。
+
 ## 最小畫面測試
 
 ```powershell

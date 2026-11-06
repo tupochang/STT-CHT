@@ -17,6 +17,7 @@ extern "C" {
 #include "func_override.h"
 #include "host_overlay.h"
 }
+#include "core_panel.h"
 
 namespace {
 struct State {
@@ -81,30 +82,8 @@ void draw(int width,int height,void*) {
     if(s.pixels.empty()) return;
     GLboolean incomingStencil=glIsEnabled(GL_STENCIL_TEST),incomingMask[4];
     glGetBooleanv(GL_COLOR_WRITEMASK,incomingMask);
-    using UseProgram = void (APIENTRY*)(GLuint);
-    using ActiveTexture = void (APIENTRY*)(GLenum);
-    auto useProgram=reinterpret_cast<UseProgram>(wglGetProcAddress("glUseProgram"));
-    auto activeTexture=reinterpret_cast<ActiveTexture>(wglGetProcAddress("glActiveTexture"));
-    GLint oldProgram=0,oldActiveTexture=0;
-    if(useProgram) {glGetIntegerv(0x8B8D,&oldProgram);useProgram(0);}
-    if(activeTexture) {glGetIntegerv(0x84E0,&oldActiveTexture);activeTexture(0x84C0);}
-    // Presentation-only proof: a full caption panel, not final typewriter/layout.
-    glPushAttrib(GL_ALL_ATTRIB_BITS);glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_STENCIL_TEST);glDisable(GL_COLOR_LOGIC_OP);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
-    glDisable(GL_LIGHTING);glDisable(GL_FOG);glDisable(GL_CULL_FACE);glDisable(GL_ALPHA_TEST);glViewport(0,0,width,height);
-    glPolygonMode(GL_FRONT_AND_BACK,GL_FILL);
-    glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_REPLACE);
-    GLint mode;glGetIntegerv(GL_MATRIX_MODE,&mode);glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();
-    glOrtho(0,width,height,0,-1,1);glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
-    GLuint tex;glGenTextures(1,&tex);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,tex);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,640,176,0,GL_RGBA,GL_UNSIGNED_BYTE,s.pixels.data());
-    glColor4f(1,1,1,1);float top=height-height*(176.0f/480.0f);
-    glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(0,top);glTexCoord2f(1,0);glVertex2f(width,top);
-    glTexCoord2f(1,1);glVertex2f(width,height);glTexCoord2f(0,1);glVertex2f(0,height);glEnd();
-    glDeleteTextures(1,&tex);glPopMatrix();glMatrixMode(GL_PROJECTION);glPopMatrix();glMatrixMode(mode);glPopAttrib();
-    if(activeTexture) activeTexture(oldActiveTexture);
-    if(useProgram) useProgram(oldProgram);
+    static PanelGL panel;
+    if(!panel.image(width,height,s.pixels.data()))return;
     static bool reported=false;
     if(!reported) {std::fprintf(stderr,"STT_P1 panel submitted %dx%d incoming_stencil=%d mask=%d%d%d%d\n",width,height,
         incomingStencil,incomingMask[0],incomingMask[1],incomingMask[2],incomingMask[3]);reported=true;}
