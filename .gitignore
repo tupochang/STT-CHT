@@ -1,0 +1,10 @@
+ROM/
+output/
+reference/
+Bios/
+机战F反编译_纯净版_1103/
+work/analysis/new_srw_reference/
+work/artifact_tmp/
+work/preserved_test_images/
+__pycache__/
+*.pyc
