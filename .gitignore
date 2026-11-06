@@ -6,5 +6,7 @@ Bios/
 work/analysis/new_srw_reference/
 work/artifact_tmp/
 work/preserved_test_images/
+work/toolchain/
+work/p0/
 __pycache__/
 *.pyc

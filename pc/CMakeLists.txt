@@ -1,0 +1,18 @@
+cmake_minimum_required(VERSION 3.20)
+project(STT2001Recompiled LANGUAGES C CXX)
+set(PSXRECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../reference/psxrecomp" CACHE PATH "PSXRecomp source checkout")
+get_filename_component(PSXRECOMP_ROOT "${PSXRECOMP_ROOT}" REALPATH)
+set(PSX_RECOMP_UI OFF CACHE BOOL "Minimal P0 runtime")
+set(PSX_REWIND OFF CACHE BOOL "P0 does not need rewind")
+include("${PSXRECOMP_ROOT}/runtime/runtime.cmake")
+psxrecomp_add_game_runtime(psx-runtime
+    PRELOADED_MODS_DIR "NONE"
+    WINDOW_TITLE "STT2001 P0 Japanese baseline"
+    DEFAULT_GAME_CONFIG_PATH "game.toml"
+    MAX_PLAYERS 1
+    GEN_MARKER "generated/SLPS_028.63_dispatch.c"
+    GEN_FULL_GLOB "generated/SLPS_028.63_full_*.c"
+)
+add_custom_command(TARGET psx-runtime POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/game.toml" "$<TARGET_FILE_DIR:psx-runtime>/game.toml")

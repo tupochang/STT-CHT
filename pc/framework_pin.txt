@@ -1,0 +1,2 @@
+https://github.com/RetroPortingToolKit/psxrecomp.git
+d9605697e25ee244fd9ea3d200c8ceb92ca1d08d

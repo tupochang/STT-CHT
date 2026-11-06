@@ -1,0 +1,54 @@
+# Autofilled by tools/new_project_layout/probe_disc.py from your legal dump.
+# Review before shipping. Runtime quirks / overlay seeds still need hand work.
+
+[game]
+name = "Super Tokusatsu Taisen 2001"
+id = "SLPS-02863"
+players = 1
+exe = "disc/SLPS_028.63"
+disc = "../ROM/Super Tokusatsu Taisen 2001 (Japan).cue"
+load_address = "0x80010000"
+entry_pc = "0x8005B8AC"
+text_size = "0x000AD800"
+stack_base = "0x801FFFF0"
+
+# Digests are for data Track 01 (first BINARY FILE / TRACK 01).
+[prepare_disc]
+out_dir = "disc"
+bin_name = "Super Tokusatsu Taisen 2001 (Japan).bin"
+cue_name = "Super Tokusatsu Taisen 2001 (Japan).cue"
+boot_exe = "SLPS_028.63"
+known_sizes = [725316816]
+known_md5 = [
+  "608c98ba27d815ca3a962d9ed553ba10",
+]
+known_sha1 = [
+  "39c7c43df06328a604ee096bfa7457f2b53a0d3f",
+]
+known_crc32 = [
+  "9a05b2ac",
+]
+
+[recompiler]
+seeds = "seeds/ghidra_funcs.txt"
+out_dir = "generated"
+strict = true
+
+[runtime]
+window_title = "Super Tokusatsu Taisen 2001 Recompiled"
+memcard_dir = "saves"
+overlay_cache = true
+
+[video]
+renderer = "opengl"
+aspect_ratio = "4:3"
+
+[controller]
+default_mode = "digital"
+
+# Online mount gate: digests + track count + optional TOC fingerprint
+# (see docs/NETPLAY.md).
+[netplay]
+require_cue = true
+required_tracks = 1
+required_disc_fp = "06d21e75a401d6383c4e4b58a8a5a8f997e9634ad88911973a56910ecd3aa478"

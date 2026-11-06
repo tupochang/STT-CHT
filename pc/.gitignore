@@ -1,0 +1,6 @@
+disc/
+psxrecomp/
+generated/
+build*/
+saves/
+*.log
