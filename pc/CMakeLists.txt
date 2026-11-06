@@ -16,7 +16,7 @@ psxrecomp_add_game_runtime(psx-runtime
 add_custom_command(TARGET psx-runtime POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/game.toml" "$<TARGET_FILE_DIR:psx-runtime>/game.toml")
-option(STT_P1 "Build the single-dialogue native caption experiment" OFF)
+option(STT_P1 "Build the native Chinese dialogue runtime" OFF)
 if(STT_P1)
     target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/p1/native_caption.cpp")
     target_link_libraries(psx-runtime PRIVATE gdi32 opengl32)

@@ -12,6 +12,8 @@
 #include <iterator>
 #include <mutex>
 #include <algorithm>
+#include <unordered_map>
+#include <cstdint>
 extern "C" {
 #include "cpu_state.h"
 #include "psx_memory.h"
@@ -23,6 +25,7 @@ extern "C" {
 #include "caption_layout.h"
 
 namespace {
+struct Entry {std::string uid;std::vector<unsigned char> raw;std::wstring text;std::vector<size_t> timeline;std::vector<std::vector<unsigned char>> contexts;};
 struct State {
     std::mutex mutex;
     std::vector<unsigned char> signature, pixels;
@@ -36,6 +39,9 @@ struct State {
     bool loaded = false;
     bool renderer_ready=false,in_frame=false;
     int text_x=0,text_y=0,lines=4,raster_w=640,raster_h=176;
+    std::vector<Entry> entries;
+    std::unordered_map<uint64_t,std::vector<size_t>> index;
+    size_t entry_index=SIZE_MAX,max_signature=0;
 };
 State& state() { static State s; return s; }
 PanelGL& panel_state(){static PanelGL panel;return panel;}
@@ -55,10 +61,46 @@ bool match(uint32_t a, const std::vector<unsigned char>& signature) {
     }
     return true;
 }
+uint64_t prefix(const std::vector<unsigned char>& raw) {
+    uint64_t key=0;for(unsigned i=0;i<8;++i)key|=uint64_t(raw[i])<<(8*i);return key;
+}
+bool match_entry(uint32_t base,const Entry& e){
+    if(base<16 || !match(base,e.raw))return false;
+    for(const auto& context:e.contexts)if(match(base-16,context))return true;
+    return false;
+}
+bool fits(const std::wstring& text,int x) {
+    HDC dc=CreateCompatibleDC(nullptr);
+    HFONT font=CreateFontW(-28,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,NONANTIALIASED_QUALITY,DEFAULT_PITCH,L"Microsoft JhengHei");
+    auto old=SelectObject(dc,font);bool ok=true;size_t start=0;
+    while(start<text.size()){size_t end=text.find(L'\n',start);if(end==std::wstring::npos)end=text.size();SIZE size{};
+        if(!GetTextExtentPoint32W(dc,text.data()+start,static_cast<int>(end-start),&size)||size.cx>(304-x)*2)ok=false;start=end+1;}
+    SelectObject(dc,old);DeleteObject(font);DeleteDC(dc);return ok;
+}
 void load(State& s) {
     s.loaded = true;
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
     std::wstring dir(exe);dir.resize(dir.find_last_of(L"\\/")+1);
+    std::ifstream batch(std::filesystem::path(dir+L"p1-data\\dialogues.bin"),std::ios::binary);
+    if(batch) {
+        char magic[8];uint32_t count=0;batch.read(magic,8);batch.read(reinterpret_cast<char*>(&count),4);
+        if(!batch || std::string(magic,8)!="STTB0002"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
+        for(uint32_t i=0;i<count;++i){uint32_t n=0,r=0,t=0;
+            batch.read(reinterpret_cast<char*>(&n),4);batch.read(reinterpret_cast<char*>(&r),4);batch.read(reinterpret_cast<char*>(&t),4);
+            if(!batch||n>32||r<8||r>2048||r%2||t>16384){s.entries.clear();s.index.clear();return;}
+            Entry e;e.uid.resize(n);e.raw.resize(r);std::string utf8(t,'\0');
+            batch.read(e.uid.data(),n);batch.read(reinterpret_cast<char*>(e.raw.data()),r);batch.read(utf8.data(),t);
+            uint32_t contexts=0;batch.read(reinterpret_cast<char*>(&contexts),4);
+            if(!batch||contexts==0||contexts>50000){s.entries.clear();s.index.clear();return;}
+            for(uint32_t j=0;j<contexts;++j){std::vector<unsigned char> c(16);batch.read(reinterpret_cast<char*>(c.data()),16);e.contexts.push_back(std::move(c));}
+            int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,utf8.data(),t,nullptr,0);
+            if(!batch||size<=0){s.entries.clear();s.index.clear();return;}
+            e.text.resize(size);MultiByteToWideChar(CP_UTF8,0,utf8.data(),t,e.text.data(),size);
+            try{e.timeline=stt_caption::timeline(e.raw,e.text);}catch(...){s.entries.clear();s.index.clear();return;}
+            s.max_signature=std::max(s.max_signature,e.raw.size());s.index[prefix(e.raw)].push_back(s.entries.size());s.entries.push_back(std::move(e));
+        }
+        std::fprintf(stderr,"STT_P1 batch loaded records=%zu\n",s.entries.size());return;
+    }
     std::ifstream sig(std::filesystem::path(dir+L"p1-data\\signature.bin"),std::ios::binary);
     s.signature.assign(std::istreambuf_iterator<char>(sig),{});
     std::ifstream txt(std::filesystem::path(dir+L"p1-data\\caption.txt"),std::ios::binary);
@@ -121,27 +163,57 @@ int refresh(CPUState*) {
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         if(!s.loaded) load(s);
-        if(s.signature.empty()) return 0;
+        if(s.signature.empty() && s.entries.empty()) return 0;
         bool found=false;
         for(unsigned slot=0;slot<3;++slot) {
             uint32_t table=0x800c6b88+slot*44,flags=0,modeWord=0,ptr=0;
             if(!peek(table,flags)||!(flags&1)||!peek(table+0x10,modeWord)||!peek(table+0x20,ptr))continue;
             unsigned mode=modeWord&255;
-            if(ptr<0x800e0000 || ptr>0x80100000)continue;
+            if(mode!=0 && mode!=4 && mode!=5)continue;
+            if(ptr<0x80010000 || ptr>0x80200000)continue;
             uint32_t base=0;
-            if(s.base && ptr>=s.base && ptr-s.base<=s.signature.size() && match(s.base,s.signature))base=s.base;
-            else for(size_t back=0;back<=s.signature.size();back+=2)
-                if(ptr>=back && match(ptr-static_cast<uint32_t>(back),s.signature)){base=ptr-static_cast<uint32_t>(back);break;}
+            size_t selected=SIZE_MAX;
+            if(!s.entries.empty()) {
+                if(s.active && s.owner_index==slot && s.entry_index<s.entries.size()){
+                    const auto& e=s.entries[s.entry_index];
+                    if(stt_caption::sample(s.base,e.raw.size(),flags,mode,ptr).visible && match_entry(s.base,e)){base=s.base;selected=s.entry_index;}
+                }
+                if(!base)for(size_t back=0;back<=s.max_signature && ptr>=back;back+=2){
+                    uint32_t a=ptr-static_cast<uint32_t>(back);
+                    // Source strings are halfword aligned; aligned word reads reconstruct the prefix.
+                    std::vector<unsigned char> bytes(8);bool valid=true;
+                    for(unsigned j=0;j<8;++j){uint32_t word=0;if(!peek((a+j)&~3u,word)){valid=false;break;}bytes[j]=(word>>(((a+j)&3)*8))&255;}
+                    if(!valid)continue;
+                    auto it=s.index.find(prefix(bytes));if(it==s.index.end())continue;
+                    for(size_t k:it->second){const auto& e=s.entries[k];
+                        if(stt_caption::sample(a,e.raw.size(),flags,mode,ptr).visible && match_entry(a,e)){base=a;selected=k;break;}}
+                    if(base)break;
+                }
+            } else {
+                if(s.base && ptr>=s.base && ptr-s.base<=s.signature.size() && match(s.base,s.signature))base=s.base;
+                else for(size_t back=0;back<=s.signature.size();back+=2)
+                    if(ptr>=back && match(ptr-static_cast<uint32_t>(back),s.signature)){base=ptr-static_cast<uint32_t>(back);break;}
+            }
             if(!base)continue;
-            auto sample=stt_caption::sample(base,s.signature.size(),flags,mode,ptr);
-            if(!sample.visible || sample.words>=s.timeline.size())continue;
-            size_t visible=s.timeline[sample.words];
+            const auto& raw=selected<s.entries.size()?s.entries[selected].raw:s.signature;
+            const auto& caption=selected<s.entries.size()?s.entries[selected].text:s.caption;
+            const auto& timeline=selected<s.entries.size()?s.entries[selected].timeline:s.timeline;
+            auto sample=stt_caption::sample(base,raw.size(),flags,mode,ptr);
+            if(!sample.visible || sample.words>=timeline.size())continue;
+            size_t visible=timeline[sample.words];
             uint32_t xy=0;peek(table+4,xy);int x=static_cast<int16_t>(xy>>16);
             peek(table+8,xy);int y=static_cast<int16_t>(xy&65535);
-            if(!s.active || s.base!=base) {
+            int lines=1+static_cast<int>(std::count(caption.begin(),caption.end(),L'\n'));
+            bool changed=!s.active || s.base!=base || s.entry_index!=selected || s.owner_index!=slot;
+            if(!s.entries.empty() && (!s.renderer_ready || !stt_caption::valid_text_origin(x,y,lines) || ((changed||s.text_x!=x)&&!fits(caption,x))))continue;
+            if(changed) {
+                if(selected<s.entries.size()){const auto& e=s.entries[selected];s.signature=e.raw;s.caption=e.text;s.timeline=e.timeline;}
+                s.pixels.clear();
+                s.lines=lines;s.entry_index=selected;
                 s.presentation_visible=true;
                 s.in_frame=s.renderer_ready && stt_caption::valid_text_origin(x,y,s.lines);
                 std::fprintf(stderr,"STT_P1 layout slot=%u x=%d y=%d in_frame=%d renderer=%d\n",slot,x,y,s.in_frame,s.renderer_ready);
+                if(selected<s.entries.size())std::fprintf(stderr,"STT_P1 matched %s base=%08x\n",s.entries[selected].uid.c_str(),base);
             }
             if(s.text_x!=x || s.text_y!=y)s.pixels.clear();s.text_x=x;s.text_y=y;
             if(!s.active || s.base!=base || s.visible!=visible || s.source_words!=sample.words)
@@ -156,7 +228,7 @@ int refresh(CPUState*) {
 }
 int glyph(CPUState* cpu) {
     bool suppress;{auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
-        suppress=s.active&&s.in_frame&&s.renderer_ready;}
+        suppress=s.active&&s.in_frame&&s.renderer_ready && (cpu->gpr[21]&255)==s.owner_index;}
     uint32_t primitive=cpu->gpr[4],offset=0;
     if(!suppress || cpu->gpr[31]!=0x8004bdb0 || !psx_ram_resolve(primitive,32,&offset))return 0;
     // Lookup and timing execute normally. Only sprite height is hidden; width

@@ -50,7 +50,9 @@ int main() {
     // active. The HUD must draw independently, then restore those states.
     glEnable(GL_STENCIL_TEST);glStencilFunc(GL_NEVER,0,~0u);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
     warmup(640,480,nullptr);if(!state().renderer_ready)return 12;
-    auto& s=state();load(s);s.active=true;s.visible=s.caption.size();draw(640,480,nullptr);glFinish();
+    auto& s=state();load(s);
+    for(const auto& e:s.entries)if(e.uid=="U00208"){s.signature=e.raw;s.caption=e.text;s.timeline=e.timeline;break;}
+    s.active=true;s.visible=s.caption.size();draw(640,480,nullptr);glFinish();
     s.in_frame=true;CPUState cpu{};cpu.gpr[4]=0x80010000;cpu.gpr[31]=0x8004bdb0;
     if(glyph(&cpu)!=1 || probeOriginalCalls!=1 || probeWidth!=12 || probeHeight!=0 || cpu.gpr[2]!=16)return 10;
     cpu.gpr[31]=0x80000000;if(glyph(&cpu)!=0 || probeOriginalCalls!=1)return 11;s.in_frame=false;
