@@ -31,6 +31,7 @@ struct State {
     size_t visible=0,source_words=0;
     uint32_t base = 0;
     bool active = false;
+    bool presentation_visible=true;
     uint32_t owner_index = 0;
     bool loaded = false;
     bool renderer_ready=false,in_frame=false;
@@ -102,7 +103,7 @@ void draw(int width,int height,void*) {
     auto& panel=panel_state();
     s.renderer_ready=panel.init();
     if(!s.renderer_ready)return;
-    if(!s.active) return;
+    if(!s.active || !s.presentation_visible) return;
     if(s.pixels.empty()) raster(s);
     if(s.pixels.empty()) return;
     GLboolean incomingStencil=glIsEnabled(GL_STENCIL_TEST),incomingMask[4];
@@ -138,6 +139,7 @@ int refresh(CPUState*) {
             uint32_t xy=0;peek(table+4,xy);int x=static_cast<int16_t>(xy>>16);
             peek(table+8,xy);int y=static_cast<int16_t>(xy&65535);
             if(!s.active || s.base!=base) {
+                s.presentation_visible=true;
                 s.in_frame=s.renderer_ready && stt_caption::valid_text_origin(x,y,s.lines);
                 std::fprintf(stderr,"STT_P1 layout slot=%u x=%d y=%d in_frame=%d renderer=%d\n",slot,x,y,s.in_frame,s.renderer_ready);
             }
@@ -163,6 +165,19 @@ int glyph(CPUState* cpu) {
     psx_host_write_half(primitive+0xa,0);
     return 1;
 }
+int presentation(CPUState* cpu) {
+    // Prologue script's original hide branch selects draw group 4 and skips
+    // dialogue updates; its release branch selects group 1 and resumes them.
+    bool hiding=cpu->gpr[31]==0x80021df8 && cpu->gpr[4]==4;
+    bool showing=cpu->gpr[31]==0x80021e08 && cpu->gpr[4]==1;
+    if(!hiding&&!showing)return 0;
+    auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
+    if(s.active && s.presentation_visible!=showing) {
+        s.presentation_visible=showing;
+        std::fprintf(stderr,"STT_P1 presentation visible=%d chars=%zu\n",showing,s.visible);
+    }
+    return 0; // The original draw-list selection still executes.
+}
 struct Register {
     Register() {
         // P1 has no launcher/menu overlay provider. Warm once on the GL thread,
@@ -171,7 +186,8 @@ struct Register {
         int a=func_override_add("stt.p1.update",0x8004a1c4,refresh,0);
         int b=func_override_add("stt.p1.dialogue",0x8004b92c,refresh,0);
         int c=func_override_add("stt.p1.glyph",0x8004a7d8,glyph,FO_CREDIT_SELF);
-        std::fprintf(stderr,"STT_P1 hooks=%d,%d,%d\n",a,b,c);
+        int d=func_override_add("stt.p1.presentation",0x80016de0,presentation,0);
+        std::fprintf(stderr,"STT_P1 hooks=%d,%d,%d,%d\n",a,b,c,d);
     }
 } registration;
 }

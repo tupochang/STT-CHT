@@ -81,8 +81,20 @@ int main() {
     std::ofstream frame("work/p0/p1-inframe.bmp",std::ios::binary);frame.write((char*)&file,sizeof(file));frame.write((char*)&info,sizeof(info));frame.write((char*)rgba.data(),rgba.size());frame.close();
     auto wide=stt_caption::fit_rect(960,480,60,24,244,64);
     bool layoutOK=wide.x==280&&wide.y==304&&wide.w==488&&wide.h==128;
+    size_t kept=s.visible;
+    cpu.gpr[31]=0x80021df8;cpu.gpr[4]=4;
+    if(presentation(&cpu)!=0 || s.presentation_visible || !s.active || s.visible!=kept)return 13;
+    glClear(GL_COLOR_BUFFER_BIT);draw(640,480,nullptr);
+    glReadPixels(0,0,640,480,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
+    size_t hiddenWhite=0;for(size_t i=0;i<rgba.size();i+=4)if(rgba[i]>200&&rgba[i+1]>200&&rgba[i+2]>200)++hiddenWhite;
+    cpu.gpr[31]=0x80021e08;cpu.gpr[4]=1;
+    if(presentation(&cpu)!=0 || !s.presentation_visible || s.visible!=kept)return 14;
+    draw(640,480,nullptr);glReadPixels(0,0,640,480,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
+    size_t resumedWhite=0;for(size_t i=0;i<rgba.size();i+=4)if(rgba[i]>200&&rgba[i+1]>200&&rgba[i+2]>200)++resumedWhite;
+    cpu.gpr[31]=0;cpu.gpr[4]=4;presentation(&cpu);if(!s.presentation_visible)return 15;
+    std::printf("hide/release hidden_white=%zu restored_white=%zu progress_preserved=%d\n",hiddenWhite,resumedWhite,s.visible==kept);
     std::printf("inframe white=%zu transparent_background=%zu outside_white=%zu layout=%d glyph_width_preserved=%d\n",inWhite,inBlue,outWhite,layoutOK,probeWidth==12);
     std::printf("render_probe core_profile=%d white=%zu dark=%zu shader_restored=%d mask_stencil_restored=%d clear=%d GL_error=%u\n",profile,white,dark,restored==(GLint)program,stateRestored,clear,error);
     wglMakeCurrent(nullptr,nullptr);wglDeleteContext(context);ReleaseDC(win,dc);DestroyWindow(win);
-    return white>100&&dark>10000&&restored==(GLint)program&&stateRestored&&clear&&error==GL_NO_ERROR&&inWhite>100&&inBlue>10000&&outWhite==0&&layoutOK?0:5;
+    return white>100&&dark>10000&&restored==(GLint)program&&stateRestored&&clear&&error==GL_NO_ERROR&&inWhite>100&&inBlue>10000&&outWhite==0&&layoutOK&&hiddenWhite==0&&resumedWhite==inWhite?0:5;
 }
