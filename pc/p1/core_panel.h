@@ -22,6 +22,7 @@ struct PanelGL {
     void (APIENTRY *BindSampler)(GLuint,GLuint)=nullptr;
     GLint (APIENTRY *GetUniformLocation)(GLuint,const char*)=nullptr;
     void (APIENTRY *Uniform1i)(GLint,GLint)=nullptr;
+    void (APIENTRY *BlendFuncSeparate)(GLenum,GLenum,GLenum,GLenum)=nullptr;
     bool init() {
         HGLRC now=wglGetCurrentContext();
         if(now==context && program) return true;
@@ -32,6 +33,7 @@ struct PanelGL {
         PANEL_PROC(GetProgramiv);PANEL_PROC(DeleteShader);PANEL_PROC(UseProgram);PANEL_PROC(ActiveTexture);
         PANEL_PROC(GenVertexArrays);PANEL_PROC(BindVertexArray);PANEL_PROC(BindBuffer);PANEL_PROC(BindSampler);
         PANEL_PROC(GetUniformLocation);PANEL_PROC(Uniform1i);
+        PANEL_PROC(BlendFuncSeparate);
 #undef PANEL_PROC
         const char* vs="#version 330 core\nout vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);uv=vec2(p.x,1.0-p.y);gl_Position=vec4(p*2.0-1.0,0,1);}";
         const char* fs="#version 330 core\nin vec2 uv;uniform sampler2D caption;out vec4 color;void main(){color=texture(caption,uv);}";
@@ -49,10 +51,13 @@ struct PanelGL {
         GenVertexArrays(1,&vao);glGenTextures(1,&texture);context=now;
         return true;
     }
-    bool image(int width,int height,const unsigned char* rgba) {
+    bool image(int width,int height,const unsigned char* rgba,int sourceW=640,int sourceH=176,
+               int x=0,int y=0,int targetW=0,int targetH=0,bool transparent=false) {
         if(!init())return false;
         GLint oldProgram,oldVAO,oldActive,oldTexture,oldSampler,oldUnpack,oldAlignment,viewport[4],polygon[2];
         GLboolean mask[4];
+        GLint blend[4];glGetIntegerv(0x80C9,&blend[0]);glGetIntegerv(0x80C8,&blend[1]);
+        glGetIntegerv(0x80CB,&blend[2]);glGetIntegerv(0x80CA,&blend[3]);
         glGetIntegerv(0x8B8D,&oldProgram);glGetIntegerv(0x85B5,&oldVAO);glGetIntegerv(0x84E0,&oldActive);
         ActiveTexture(0x84C0);glGetIntegerv(GL_TEXTURE_BINDING_2D,&oldTexture);glGetIntegerv(0x8919,&oldSampler);
         glGetIntegerv(0x88EF,&oldUnpack);glGetIntegerv(GL_UNPACK_ALIGNMENT,&oldAlignment);
@@ -64,13 +69,15 @@ struct PanelGL {
         glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,0x812F);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,0x812F);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,640,176,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
-        glViewport(0,0,width,height*176/480);UseProgram(program);Uniform1i(GetUniformLocation(program,"caption"),0);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,sourceW,sourceH,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
+        if(transparent){glEnable(GL_BLEND);BlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);}
+        glViewport(x,y,targetW?targetW:width,targetH?targetH:height*176/480);UseProgram(program);Uniform1i(GetUniformLocation(program,"caption"),0);
         BindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
         BindVertexArray(oldVAO);UseProgram(oldProgram);glBindTexture(GL_TEXTURE_2D,oldTexture);BindSampler(0,oldSampler);
         BindBuffer(0x88EC,oldUnpack);glPixelStorei(GL_UNPACK_ALIGNMENT,oldAlignment);ActiveTexture(oldActive);
         glViewport(viewport[0],viewport[1],viewport[2],viewport[3]);glColorMask(mask[0],mask[1],mask[2],mask[3]);
         glPolygonMode(GL_FRONT_AND_BACK,polygon[0]);
+        BlendFuncSeparate(blend[0],blend[1],blend[2],blend[3]);
         for(int i=0;i<7;++i)if(enabled[i])glEnable(gates[i]);
         return true;
     }

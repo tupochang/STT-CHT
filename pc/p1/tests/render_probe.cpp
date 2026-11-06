@@ -2,10 +2,14 @@
 // foreign shader already bound. No game or guest RAM runs in this probe.
 #include "../native_caption.cpp"
 extern "C" {
+unsigned probeOriginalCalls=0;uint16_t probeWidth=0,probeHeight=0;
 uint32_t g_psx_ram_mask=0x1fffff, g_psx_ram_size=0x200000;
 int psx_peek_word(uint32_t,uint32_t*) {return 0;}
 int func_override_add(const char*,uint32_t,FuncOverrideFn,int32_t) {return 0;}
 void psx_host_set_hud_draw_cb(PsxHostOverlayDrawFn,void*) {}
+void psx_host_overlay_set_draw_cb(PsxHostOverlayDrawFn,void*) {}
+void func_override_call_original(CPUState* cpu){++probeOriginalCalls;probeWidth=12;probeHeight=16;cpu->gpr[2]=16;}
+void psx_host_write_half(uint32_t address,uint16_t value){if(address==0x8001000a)probeHeight=value;}
 }
 int main() {
     HWND win=CreateWindowW(L"STATIC",L"Caption render probe",WS_POPUP,0,0,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -45,7 +49,11 @@ int main() {
     // The PS1 mask-bit renderer can leave stencil rejection and color masks
     // active. The HUD must draw independently, then restore those states.
     glEnable(GL_STENCIL_TEST);glStencilFunc(GL_NEVER,0,~0u);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
+    warmup(640,480,nullptr);if(!state().renderer_ready)return 12;
     auto& s=state();load(s);s.active=true;s.visible=s.caption.size();draw(640,480,nullptr);glFinish();
+    s.in_frame=true;CPUState cpu{};cpu.gpr[4]=0x80010000;cpu.gpr[31]=0x8004bdb0;
+    if(glyph(&cpu)!=1 || probeOriginalCalls!=1 || probeWidth!=12 || probeHeight!=0 || cpu.gpr[2]!=16)return 10;
+    cpu.gpr[31]=0x80000000;if(glyph(&cpu)!=0 || probeOriginalCalls!=1)return 11;s.in_frame=false;
     GLint restored=0;glGetIntegerv(0x8B8D,&restored);
     GLboolean mask[4];glGetBooleanv(GL_COLOR_WRITEMASK,mask);
     bool stateRestored=glIsEnabled(GL_STENCIL_TEST)&&!mask[0]&&!mask[1]&&!mask[2]&&!mask[3];
@@ -62,7 +70,19 @@ int main() {
     std::ofstream bmp("work/p0/p1-native-panel.bmp",std::ios::binary);bmp.write((char*)&file,sizeof(file));bmp.write((char*)&info,sizeof(info));bmp.write((char*)rgba.data(),rgba.size());bmp.close();
     s.active=false;glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDisable(GL_STENCIL_TEST);glClear(GL_COLOR_BUFFER_BIT);draw(640,480,nullptr);unsigned char pixel[4];glReadPixels(20,20,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
     bool clear=pixel[0]==0&&pixel[1]==0&&pixel[2]==255;
+    s.active=true;s.in_frame=true;s.text_x=60;s.text_y=24;s.pixels.clear();draw(640,480,nullptr);glFinish();
+    glReadPixels(0,0,640,480,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());size_t inWhite=0,inBlue=0,outWhite=0;
+    for(int y=0;y<480;++y)for(int x=0;x<640;++x){size_t i=(y*640+x)*4;
+        bool inside=x>=120&&x<608&&y>=304&&y<432;
+        bool isWhite=rgba[i]>200&&rgba[i+1]>200&&rgba[i+2]>200;
+        if(inside&&isWhite)++inWhite;if(!inside&&isWhite)++outWhite;
+        if(inside&&rgba[i]==0&&rgba[i+1]==0&&rgba[i+2]==255)++inBlue;}
+    for(size_t i=0;i<rgba.size();i+=4)std::swap(rgba[i],rgba[i+2]);
+    std::ofstream frame("work/p0/p1-inframe.bmp",std::ios::binary);frame.write((char*)&file,sizeof(file));frame.write((char*)&info,sizeof(info));frame.write((char*)rgba.data(),rgba.size());frame.close();
+    auto wide=stt_caption::fit_rect(960,480,60,24,244,64);
+    bool layoutOK=wide.x==280&&wide.y==304&&wide.w==488&&wide.h==128;
+    std::printf("inframe white=%zu transparent_background=%zu outside_white=%zu layout=%d glyph_width_preserved=%d\n",inWhite,inBlue,outWhite,layoutOK,probeWidth==12);
     std::printf("render_probe core_profile=%d white=%zu dark=%zu shader_restored=%d mask_stencil_restored=%d clear=%d GL_error=%u\n",profile,white,dark,restored==(GLint)program,stateRestored,clear,error);
     wglMakeCurrent(nullptr,nullptr);wglDeleteContext(context);ReleaseDC(win,dc);DestroyWindow(win);
-    return white>100&&dark>10000&&restored==(GLint)program&&stateRestored&&clear&&error==GL_NO_ERROR?0:5;
+    return white>100&&dark>10000&&restored==(GLint)program&&stateRestored&&clear&&error==GL_NO_ERROR&&inWhite>100&&inBlue>10000&&outWhite==0&&layoutOK?0:5;
 }
