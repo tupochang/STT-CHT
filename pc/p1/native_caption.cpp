@@ -24,7 +24,9 @@ struct State {
     std::vector<unsigned char> signature, pixels;
     std::wstring caption;
     uint32_t base = 0;
-    ULONGLONG seen = 0;
+    bool active = false;
+    bool owner_general = false;
+    uint32_t owner_index = 0;
     bool loaded = false;
 };
 State& state() { static State s; return s; }
@@ -74,12 +76,20 @@ void raster(State& s) {
 }
 void draw(int width,int height,void*) {
     auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
-    if(!s.seen || GetTickCount64()-s.seen>250) return;
+    if(!s.active) return;
     if(s.pixels.empty()) raster(s);
     if(s.pixels.empty()) return;
+    using UseProgram = void (APIENTRY*)(GLuint);
+    using ActiveTexture = void (APIENTRY*)(GLenum);
+    auto useProgram=reinterpret_cast<UseProgram>(wglGetProcAddress("glUseProgram"));
+    auto activeTexture=reinterpret_cast<ActiveTexture>(wglGetProcAddress("glActiveTexture"));
+    GLint oldProgram=0,oldActiveTexture=0;
+    if(useProgram) {glGetIntegerv(0x8B8D,&oldProgram);useProgram(0);}
+    if(activeTexture) {glGetIntegerv(0x84E0,&oldActiveTexture);activeTexture(0x84C0);}
     // Presentation-only proof: a full caption panel, not final typewriter/layout.
     glPushAttrib(GL_ALL_ATTRIB_BITS);glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);
     glDisable(GL_LIGHTING);glDisable(GL_FOG);glDisable(GL_CULL_FACE);glDisable(GL_ALPHA_TEST);glViewport(0,0,width,height);
+    glPolygonMode(GL_FRONT_AND_BACK,GL_FILL);
     glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_REPLACE);
     GLint mode;glGetIntegerv(GL_MATRIX_MODE,&mode);glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();
     glOrtho(0,width,height,0,-1,1);glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
@@ -90,6 +100,10 @@ void draw(int width,int height,void*) {
     glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(0,top);glTexCoord2f(1,0);glVertex2f(width,top);
     glTexCoord2f(1,1);glVertex2f(width,height);glTexCoord2f(0,1);glVertex2f(0,height);glEnd();
     glDeleteTextures(1,&tex);glPopMatrix();glMatrixMode(GL_PROJECTION);glPopMatrix();glMatrixMode(mode);glPopAttrib();
+    if(activeTexture) activeTexture(oldActiveTexture);
+    if(useProgram) useProgram(oldProgram);
+    static bool reported=false;
+    if(!reported) {std::fprintf(stderr,"STT_P1 native panel drawn %dx%d\n",width,height);reported=true;}
 }
 int observe(CPUState* cpu, bool is_general) {
     auto& s=state();
@@ -104,8 +118,11 @@ int observe(CPUState* cpu, bool is_general) {
         if(traces++<16) std::fprintf(stderr,"STT_P1 observe kind=%s ptr=%08x ra=%08x\n",is_general?"general":"dialogue",ptr,cpu->gpr[31]);
         if(match(ptr,s.signature)) {
             if(s.base!=ptr) std::fprintf(stderr,"STT_P1 matched U00208 ptr=%08x ra=%08x\n",ptr,cpu->gpr[31]);
-            s.base=ptr;s.seen=GetTickCount64();
-        } else if(s.base && ptr>=s.base && ptr<s.base+s.signature.size() && match(s.base,s.signature)) s.seen=GetTickCount64();
+            s.base=ptr;s.active=true;s.owner_general=is_general;s.owner_index=cpu->gpr[4];
+        } else if(s.base && ptr>=s.base && ptr<s.base+s.signature.size() && match(s.base,s.signature)) s.active=true;
+        else if(s.active && s.owner_general==is_general && (is_general || s.owner_index==cpu->gpr[4]) && ptr>=0x800e0000 && ptr<0x80100000) {
+            std::fprintf(stderr,"STT_P1 cleared next-source ptr=%08x\n",ptr);s.active=false;s.base=0;
+        }
     }
     psx_host_set_hud_draw_cb(draw,nullptr);
     return 0; // Original guest function and its cycle accounting execute unchanged.

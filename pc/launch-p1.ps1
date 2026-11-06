@@ -20,13 +20,19 @@ $options = @{
 }
 if ($Headless) { $options.WindowStyle = 'Hidden' } else { $options.NoNewWindow = $true }
 $game = Start-Process @options
+# Cache the handle before waiting; Windows PowerShell 5.1 can otherwise expose
+# a null ExitCode after Start-Process even when the child exited normally.
+$processHandle = $game.Handle
 if ($StopAfterSeconds -gt 0 -and -not $game.WaitForExit($StopAfterSeconds * 1000)) {
     Stop-Process -Id $game.Id
     Write-Output "Controlled test stopped after $StopAfterSeconds seconds."
     exit 0
 }
 $game.WaitForExit()
-if ($game.ExitCode -ne 0) {
+$game.Refresh()
+$exitCode = $game.ExitCode
+if ($null -eq $exitCode) { throw 'Unable to read P1 process exit status.' }
+if ($exitCode -ne 0) {
     Get-Content -LiteralPath $options.RedirectStandardError -Tail 12
-    throw "P1 exited with code $($game.ExitCode). See p1-session.stderr.log."
+    throw "P1 exited with code $exitCode. See p1-session.stderr.log."
 }
