@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <iterator>
 #include <mutex>
+#include <algorithm>
 extern "C" {
 #include "cpu_state.h"
 #include "psx_memory.h"
@@ -18,15 +19,17 @@ extern "C" {
 #include "host_overlay.h"
 }
 #include "core_panel.h"
+#include "caption_progress.h"
 
 namespace {
 struct State {
     std::mutex mutex;
     std::vector<unsigned char> signature, pixels;
     std::wstring caption;
+    std::vector<size_t> timeline;
+    size_t visible=0,source_words=0;
     uint32_t base = 0;
     bool active = false;
-    bool owner_general = false;
     uint32_t owner_index = 0;
     bool loaded = false;
 };
@@ -56,6 +59,9 @@ void load(State& s) {
     }
     s.caption.resize(count);
     MultiByteToWideChar(CP_UTF8,0,utf8.data(),static_cast<int>(utf8.size()),s.caption.data(),count);
+    s.caption.erase(std::remove(s.caption.begin(),s.caption.end(),L'\r'),s.caption.end());
+    try{s.timeline=stt_caption::timeline(s.signature,s.caption);}
+    catch(const std::exception& e){std::fprintf(stderr,"STT_P1 progress map rejected: %s\n",e.what());s.signature.clear();return;}
     std::fprintf(stderr,"STT_P1 loaded U00208 signature=%zu\n",s.signature.size());
 }
 void raster(State& s) {
@@ -70,7 +76,7 @@ void raster(State& s) {
     HFONT font=CreateFontW(-28,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,NONANTIALIASED_QUALITY,DEFAULT_PITCH,L"Microsoft JhengHei");
     auto oldFont=SelectObject(dc,font);SetTextColor(dc,RGB(255,255,255));SetBkMode(dc,TRANSPARENT);
-    RECT text{18,10,W-18,H-8};DrawTextW(dc,s.caption.c_str(),static_cast<int>(s.caption.size()),&text,DT_LEFT|DT_NOPREFIX|DT_WORDBREAK);
+    RECT text{18,10,W-18,H-8};DrawTextW(dc,s.caption.c_str(),static_cast<int>(s.visible),&text,DT_LEFT|DT_NOPREFIX|DT_WORDBREAK);
     GdiFlush();s.pixels.resize(W*H*4);auto src=static_cast<unsigned char*>(bits);
     for(size_t i=0;i<s.pixels.size();i+=4){s.pixels[i]=src[i+2];s.pixels[i+1]=src[i+1];s.pixels[i+2]=src[i];s.pixels[i+3]=255;}
     SelectObject(dc,oldFont);DeleteObject(font);SelectObject(dc,old);DeleteObject(bm);DeleteDC(dc);
@@ -88,34 +94,40 @@ void draw(int width,int height,void*) {
     if(!reported) {std::fprintf(stderr,"STT_P1 panel submitted %dx%d incoming_stencil=%d mask=%d%d%d%d\n",width,height,
         incomingStencil,incomingMask[0],incomingMask[1],incomingMask[2],incomingMask[3]);reported=true;}
 }
-int observe(CPUState* cpu, bool is_general) {
+int refresh(CPUState*) {
     auto& s=state();
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         if(!s.loaded) load(s);
         if(s.signature.empty()) return 0;
-        uint32_t ptr=0;
-        if(is_general) peek(cpu->gpr[29]+0x10,ptr);
-        else if(cpu->gpr[4]<256) peek(0x800c6b88+cpu->gpr[4]*44+0x20,ptr);
-        static unsigned traces=0;
-        if(traces++<16) std::fprintf(stderr,"STT_P1 observe kind=%s ptr=%08x ra=%08x\n",is_general?"general":"dialogue",ptr,cpu->gpr[31]);
-        if(match(ptr,s.signature)) {
-            if(s.base!=ptr) std::fprintf(stderr,"STT_P1 matched U00208 ptr=%08x ra=%08x\n",ptr,cpu->gpr[31]);
-            s.base=ptr;s.active=true;s.owner_general=is_general;s.owner_index=cpu->gpr[4];
-        } else if(s.base && ptr>=s.base && ptr<s.base+s.signature.size() && match(s.base,s.signature)) s.active=true;
-        else if(s.active && s.owner_general==is_general && (is_general || s.owner_index==cpu->gpr[4]) && ptr>=0x800e0000 && ptr<0x80100000) {
-            std::fprintf(stderr,"STT_P1 cleared next-source ptr=%08x\n",ptr);s.active=false;s.base=0;
+        bool found=false;
+        for(unsigned slot=0;slot<3;++slot) {
+            uint32_t table=0x800c6b88+slot*44,flags=0,modeWord=0,ptr=0;
+            if(!peek(table,flags)||!(flags&1)||!peek(table+0x10,modeWord)||!peek(table+0x20,ptr))continue;
+            unsigned mode=modeWord&255;
+            if(ptr<0x800e0000 || ptr>0x80100000)continue;
+            uint32_t base=0;
+            if(s.base && ptr>=s.base && ptr-s.base<=s.signature.size() && match(s.base,s.signature))base=s.base;
+            else for(size_t back=0;back<=s.signature.size();back+=2)
+                if(ptr>=back && match(ptr-static_cast<uint32_t>(back),s.signature)){base=ptr-static_cast<uint32_t>(back);break;}
+            if(!base)continue;
+            auto sample=stt_caption::sample(base,s.signature.size(),flags,mode,ptr);
+            if(!sample.visible || sample.words>=s.timeline.size())continue;
+            size_t visible=s.timeline[sample.words];
+            if(!s.active || s.base!=base || s.visible!=visible || s.source_words!=sample.words)
+                std::fprintf(stderr,"STT_P1 progress slot=%u mode=%u ptr=%08x words=%zu chars=%zu\n",slot,mode,ptr,sample.words,visible);
+            if(s.visible!=visible || !s.active)s.pixels.clear();
+            s.active=true;s.base=base;s.owner_index=slot;s.visible=visible;s.source_words=sample.words;found=true;break;
         }
+        if(!found && s.active){std::fprintf(stderr,"STT_P1 cleared inactive/replaced dialogue\n");s.active=false;s.base=0;s.visible=0;s.pixels.clear();}
     }
     psx_host_set_hud_draw_cb(draw,nullptr);
     return 0; // Original guest function and its cycle accounting execute unchanged.
 }
-int general(CPUState* c) { return observe(c,true); }
-int dialogue(CPUState* c) { return observe(c,false); }
 struct Register {
     Register() {
-        int a=func_override_add("stt.p1.general",0x8004a954,general,0);
-        int b=func_override_add("stt.p1.dialogue",0x8004b92c,dialogue,0);
+        int a=func_override_add("stt.p1.update",0x8004a1c4,refresh,0);
+        int b=func_override_add("stt.p1.dialogue",0x8004b92c,refresh,0);
         std::fprintf(stderr,"STT_P1 hooks=%d,%d\n",a,b);
     }
 } registration;

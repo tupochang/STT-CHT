@@ -45,7 +45,7 @@ int main() {
     // The PS1 mask-bit renderer can leave stencil rejection and color masks
     // active. The HUD must draw independently, then restore those states.
     glEnable(GL_STENCIL_TEST);glStencilFunc(GL_NEVER,0,~0u);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
-    auto& s=state();load(s);s.active=true;draw(640,480,nullptr);glFinish();
+    auto& s=state();load(s);s.active=true;s.visible=s.caption.size();draw(640,480,nullptr);glFinish();
     GLint restored=0;glGetIntegerv(0x8B8D,&restored);
     GLboolean mask[4];glGetBooleanv(GL_COLOR_WRITEMASK,mask);
     bool stateRestored=glIsEnabled(GL_STENCIL_TEST)&&!mask[0]&&!mask[1]&&!mask[2]&&!mask[3];
