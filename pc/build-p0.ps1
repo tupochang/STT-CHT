@@ -27,6 +27,6 @@ if ($Step -eq 'Emitters') {
 } else {
     Run-Native 'cmake' @('-S', $projectRoot, '-B', "$projectRoot/build-runtime", '-G', 'Ninja',
         '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_C_COMPILER=clang', '-DCMAKE_CXX_COMPILER=clang++',
-        '-DPSXRECOMP_REQUIRE_GAME_C=ON', '-DPSX_REWIND=OFF')
+        '-DPSXRECOMP_REQUIRE_GAME_C=ON', '-DPSX_REWIND=OFF', '-DSTT_P1=OFF')
     Run-Native 'cmake' @('--build', "$projectRoot/build-runtime", '--target', 'psx-runtime', '-j2')
 }

@@ -3,4 +3,5 @@ psxrecomp/
 generated/
 build*/
 saves/
+saves-p1/
 *.log
