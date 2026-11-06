@@ -41,5 +41,15 @@ int main(){
     if(fits(std::wstring(200,L'漢'),60))return 13;
     s.active=true;s.in_frame=true;s.owner_index=1;CPUState cpu{};cpu.gpr[4]=0x80010000;cpu.gpr[31]=0x8004bdb0;cpu.gpr[21]=0;
     if(glyph(&cpu)!=0)return 14;
+    place(a,4,s.entries[a].raw.size()/2);cpu.gpr[28]=0x800d0000;
+    word(cpu.gpr[28]+0x2c0,1);word(cpu.gpr[28]+0x2f4,2u<<16);
+    word(cpu.gpr[28]+0x2b8,64u|(64u<<16));word(cpu.gpr[28]+0x2bc,64);
+    frame_sync(&cpu);if(!s.active||s.tint[0]!=0.5f||s.tint[1]!=0.5f||s.tint[2]!=0.5f)return 18;
+    word(cpu.gpr[28]+0x2b8,0);word(cpu.gpr[28]+0x2bc,0);frame_sync(&cpu);
+    if(s.tint[0]!=0||s.tint[1]!=0||s.tint[2]!=0)return 19;
+    word(cpu.gpr[28]+0x2f4,3u<<16);frame_sync(&cpu);if(s.tint[0]!=1)return 20;
+    // The scene closes the slot without another dialogue update.
+    word(slot+0x10,6);frame_sync(&cpu);if(s.active)return 21;
+    std::puts("frame_sync: half/black fade, selective-mode isolation and scene close without dialogue updates passed");
     std::printf("batch_probe: %zu records validated; replacement, backward seek, wait, clear, mid-dialogue recovery, width rejection, slot isolation passed\n",s.entries.size());return 0;
 }

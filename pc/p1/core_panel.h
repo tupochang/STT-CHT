@@ -22,6 +22,7 @@ struct PanelGL {
     void (APIENTRY *BindSampler)(GLuint,GLuint)=nullptr;
     GLint (APIENTRY *GetUniformLocation)(GLuint,const char*)=nullptr;
     void (APIENTRY *Uniform1i)(GLint,GLint)=nullptr;
+    void (APIENTRY *Uniform3f)(GLint,GLfloat,GLfloat,GLfloat)=nullptr;
     void (APIENTRY *BlendFuncSeparate)(GLenum,GLenum,GLenum,GLenum)=nullptr;
     bool init() {
         HGLRC now=wglGetCurrentContext();
@@ -32,11 +33,11 @@ struct PanelGL {
         PANEL_PROC(GetShaderInfoLog);PANEL_PROC(CreateProgram);PANEL_PROC(AttachShader);PANEL_PROC(LinkProgram);
         PANEL_PROC(GetProgramiv);PANEL_PROC(DeleteShader);PANEL_PROC(UseProgram);PANEL_PROC(ActiveTexture);
         PANEL_PROC(GenVertexArrays);PANEL_PROC(BindVertexArray);PANEL_PROC(BindBuffer);PANEL_PROC(BindSampler);
-        PANEL_PROC(GetUniformLocation);PANEL_PROC(Uniform1i);
+        PANEL_PROC(GetUniformLocation);PANEL_PROC(Uniform1i);PANEL_PROC(Uniform3f);
         PANEL_PROC(BlendFuncSeparate);
 #undef PANEL_PROC
         const char* vs="#version 330 core\nout vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);uv=vec2(p.x,1.0-p.y);gl_Position=vec4(p*2.0-1.0,0,1);}";
-        const char* fs="#version 330 core\nin vec2 uv;uniform sampler2D caption;out vec4 color;void main(){color=texture(caption,uv);}";
+        const char* fs="#version 330 core\nin vec2 uv;uniform sampler2D caption;uniform vec3 tint;out vec4 color;void main(){color=texture(caption,uv);color.rgb*=tint;}";
         GLuint shaders[2]={CreateShader(0x8B31),CreateShader(0x8B30)};
         const char* sources[2]={vs,fs};
         for(int i=0;i<2;++i) {
@@ -52,7 +53,7 @@ struct PanelGL {
         return true;
     }
     bool image(int width,int height,const unsigned char* rgba,int sourceW=640,int sourceH=176,
-               int x=0,int y=0,int targetW=0,int targetH=0,bool transparent=false) {
+               int x=0,int y=0,int targetW=0,int targetH=0,bool transparent=false,float red=1,float green=1,float blue=1) {
         if(!init())return false;
         GLint oldProgram,oldVAO,oldActive,oldTexture,oldSampler,oldUnpack,oldAlignment,viewport[4],polygon[2];
         GLboolean mask[4];
@@ -72,6 +73,7 @@ struct PanelGL {
         glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,sourceW,sourceH,0,GL_RGBA,GL_UNSIGNED_BYTE,rgba);
         if(transparent){glEnable(GL_BLEND);BlendFuncSeparate(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA,GL_ONE,GL_ONE_MINUS_SRC_ALPHA);}
         glViewport(x,y,targetW?targetW:width,targetH?targetH:height*176/480);UseProgram(program);Uniform1i(GetUniformLocation(program,"caption"),0);
+        Uniform3f(GetUniformLocation(program,"tint"),red,green,blue);
         BindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
         BindVertexArray(oldVAO);UseProgram(oldProgram);glBindTexture(GL_TEXTURE_2D,oldTexture);BindSampler(0,oldSampler);
         BindBuffer(0x88EC,oldUnpack);glPixelStorei(GL_UNPACK_ALIGNMENT,oldAlignment);ActiveTexture(oldActive);

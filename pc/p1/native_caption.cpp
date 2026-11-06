@@ -42,6 +42,7 @@ struct State {
     std::vector<Entry> entries;
     std::unordered_map<uint64_t,std::vector<size_t>> index;
     size_t entry_index=SIZE_MAX,max_signature=0;
+    float tint[3]={1,1,1};
 };
 State& state() { static State s; return s; }
 PanelGL& panel_state(){static PanelGL panel;return panel;}
@@ -145,14 +146,14 @@ void draw(int width,int height,void*) {
     auto& panel=panel_state();
     s.renderer_ready=panel.init();
     if(!s.renderer_ready)return;
-    if(!s.active || !s.presentation_visible) return;
+    if(!s.active || !s.presentation_visible || (s.tint[0]==0 && s.tint[1]==0 && s.tint[2]==0)) return;
     if(s.pixels.empty()) raster(s);
     if(s.pixels.empty()) return;
     GLboolean incomingStencil=glIsEnabled(GL_STENCIL_TEST),incomingMask[4];
     glGetBooleanv(GL_COLOR_WRITEMASK,incomingMask);
     if(s.in_frame) {
         auto r=stt_caption::fit_rect(width,height,s.text_x,s.text_y,304-s.text_x,s.lines*16);
-        if(!panel.image(width,height,s.pixels.data(),s.raster_w,s.raster_h,r.x,r.y,r.w,r.h,true))return;
+        if(!panel.image(width,height,s.pixels.data(),s.raster_w,s.raster_h,r.x,r.y,r.w,r.h,true,s.tint[0],s.tint[1],s.tint[2]))return;
     } else if(!panel.image(width,height,s.pixels.data()))return;
     static bool reported=false;
     if(!reported) {std::fprintf(stderr,"STT_P1 panel submitted %dx%d incoming_stencil=%d mask=%d%d%d%d\n",width,height,
@@ -226,6 +227,23 @@ int refresh(CPUState*) {
     psx_host_set_hud_draw_cb(draw,nullptr);
     return 0; // Original guest function and its cycle accounting execute unchanged.
 }
+int frame_sync(CPUState* cpu) {
+    // This entry runs after scene updates, even when dialogue updates stop.
+    refresh(cpu);
+    auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
+    uint32_t enabled=0,mode=0;const uint32_t gp=cpu->gpr[28];
+    float tint[3]={1,1,1};
+    // Mode 3 targets a draw-object interval, not the whole screen. Do not
+    // extrapolate its color to a caption without knowing the target objects.
+    if(peek(gp+0x2c0,enabled)&&enabled && peek((gp+0x2f6)&~3u,mode) && ((mode>>16)&65535)!=3) {
+        for(unsigned i=0;i<3;++i){uint32_t a=gp+0x2b8+i*2,v=0;
+            if(peek(a&~3u,v))tint[i]=((v>>((a&3)*8))&255)/128.0f;}
+    }
+    if(s.active && (s.tint[0]!=tint[0]||s.tint[1]!=tint[1]||s.tint[2]!=tint[2]))
+        std::fprintf(stderr,"STT_P1 frame tint=%.3f,%.3f,%.3f\n",tint[0],tint[1],tint[2]);
+    std::copy(tint,tint+3,s.tint);
+    return 0;
+}
 int glyph(CPUState* cpu) {
     bool suppress;{auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
         suppress=s.active&&s.in_frame&&s.renderer_ready && (cpu->gpr[21]&255)==s.owner_index;}
@@ -259,7 +277,8 @@ struct Register {
         int b=func_override_add("stt.p1.dialogue",0x8004b92c,refresh,0);
         int c=func_override_add("stt.p1.glyph",0x8004a7d8,glyph,FO_CREDIT_SELF);
         int d=func_override_add("stt.p1.presentation",0x80016de0,presentation,0);
-        std::fprintf(stderr,"STT_P1 hooks=%d,%d,%d,%d\n",a,b,c,d);
+        int e=func_override_add("stt.p1.frame",0x800150e8,frame_sync,0);
+        std::fprintf(stderr,"STT_P1 hooks=%d,%d,%d,%d,%d\n",a,b,c,d,e);
     }
 } registration;
 }

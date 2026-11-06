@@ -2,7 +2,7 @@ param([switch]$Headless, [ValidateRange(0,60)][int]$StopAfterSeconds = 0)
 $ErrorActionPreference = 'Stop'
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $env:Path = "$workspaceRoot/work/toolchain/portable/bin;$env:Path"
-$exe = "$PSScriptRoot/build-runtime/STT2001_P1_NativeText.exe"
+$exe = "$PSScriptRoot/build-runtime/STT2001_P1_NativeText_FrameSync.exe"
 if (-not (Test-Path -LiteralPath $exe)) { throw 'Run pc/build-p1.ps1 first.' }
 $arguments = @('--renderer','opengl','--game',('"'+$PSScriptRoot+'/game.toml"'),
     '--bios',('"'+$workspaceRoot+'/reference/psxrecomp/bios/openbios.bin"'),

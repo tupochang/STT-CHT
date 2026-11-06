@@ -20,7 +20,7 @@ option(STT_P1 "Build the native Chinese dialogue runtime" OFF)
 if(STT_P1)
     target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/p1/native_caption.cpp")
     target_link_libraries(psx-runtime PRIVATE gdi32 opengl32)
-    set_target_properties(psx-runtime PROPERTIES OUTPUT_NAME "STT2001_P1_NativeText")
+    set_target_properties(psx-runtime PROPERTIES OUTPUT_NAME "STT2001_P1_NativeText_FrameSync")
     add_custom_command(TARGET psx-runtime POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/p1/data"
             "$<TARGET_FILE_DIR:psx-runtime>/p1-data")
