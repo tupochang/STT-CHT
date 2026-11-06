@@ -71,15 +71,20 @@ def main():
             code = struct.unpack_from('<H',data,p)[0]; words.append(code)
             if code in (0xfffd,0xfffe): break
         if not words or words[-1] != int(row['term'],16): reason = 'terminal_mismatch'
-        elif any(c>=0xff00 and c not in (0xfffb,0xfffd,0xfffe) for c in words): reason = 'source_controls'
-        elif text.count('\n') != words.count(0xfffb): reason = 'line_count_mismatch'
-        elif text.count('\n')>=4: reason = 'more_than_four_lines'
+        header = 0
+        if words and words[0]==0xff33 and 0xff30 in words:
+            header = words.index(0xff30)+1
+            if header<len(words) and words[header]==0xfffb: header+=1
+        body = words[header:]
+        if not reason and any(c>=0xff00 and c not in (0xfffb,0xfffd,0xfffe) for c in body): reason = 'source_controls'
+        elif not reason and text.count('\n') != body.count(0xfffb): reason = 'line_count_mismatch'
+        elif not reason and text.count('\n')+bool(header)>=4: reason = 'more_than_four_lines'
         if reason:
             skipped.append({'id':row['id'],'uid':uid,'reason':reason}); continue
         raw = struct.pack(f'<{len(words)}H',*words)
         if start<16:
             skipped.append({'id':row['id'],'uid':uid,'reason':'insufficient_source_context'}); continue
-        row = dict(row, context=data[start-16:start])
+        row = dict(row, context=data[start-16:start], header=header)
         if len(raw)<8:
             skipped.append({'id':row['id'],'uid':uid,'reason':'short_ambiguous_signature'}); continue
         groups.setdefault(raw,{}).setdefault(text,[]).append(row)
@@ -90,16 +95,24 @@ def main():
                 skipped.extend({'id':r['id'],'uid':r['uid'],'reason':'conflicting_translation_for_signature'} for r in rr)
             continue
         text,rr = next(iter(variants.items())); uid = rr[0]['uid']
-        records.append((uid,raw,text,sorted({r['context'] for r in rr})))
+        records.append((uid,raw,text,sorted({r['context'] for r in rr}),rr[0]['header']))
         eligible.extend({'id':r['id'],'uid':r['uid']} for r in rr)
     records.sort()
     out = ROOT/'pc/p1/data'; out.mkdir(parents=True,exist_ok=True)
-    pack = bytearray(b'STTB0002'+struct.pack('<I',len(records)))
-    for uid,raw,text,contexts in records:
+    pack = bytearray(b'STTB0003'+struct.pack('<I',len(records)))
+    for uid,raw,text,contexts,header in records:
         u,t = uid.encode(),text.encode('utf-8')
         pack += struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
-        pack += struct.pack('<I',len(contexts))+b''.join(contexts)
+        pack += struct.pack('<II',header,len(contexts))+b''.join(contexts)
     (out/'dialogues.bin').write_bytes(pack)
+    # Keep the former frame-sync executable usable with its v2 data format.
+    legacy_records=[r for r in records if not r[4]]
+    legacy=bytearray(b'STTB0002'+struct.pack('<I',len(legacy_records)))
+    for uid,raw,text,contexts,header in legacy_records:
+        u,t=uid.encode(),text.encode('utf-8')
+        legacy+=struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
+        legacy+=struct.pack('<I',len(contexts))+b''.join(contexts)
+    (out/'dialogues-legacy.bin').write_bytes(legacy)
     report = {'workbook_sha256':hashlib.sha256((ROOT/'334.xlsx').read_bytes()).hexdigest(),
         'records':len(records),'eligible_occurrences':len(eligible),'eligible_units':len({r['uid'] for r in eligible}),
         'stage5_eligible':[r for r in eligible if ':STAGE0005:' in r['id']],

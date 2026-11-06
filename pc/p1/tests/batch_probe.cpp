@@ -3,6 +3,7 @@
 #include <cstring>
 std::vector<unsigned char> ram(0x200000);
 extern "C" {
+void stt_pc_controls_frame(){}
 uint32_t g_psx_ram_mask=0x1fffff,g_psx_ram_size=0x200000;
 int psx_peek_word(uint32_t a,uint32_t* v){uint32_t off=a&0x1fffff;if(off>ram.size()-4)return 0;std::memcpy(v,ram.data()+off,4);return 1;}
 int func_override_add(const char*,uint32_t,FuncOverrideFn,int32_t){return 0;}
@@ -51,5 +52,12 @@ int main(){
     // The scene closes the slot without another dialogue update.
     word(slot+0x10,6);frame_sync(&cpu);if(s.active)return 21;
     std::puts("frame_sync: half/black fade, selective-mode isolation and scene close without dialogue updates passed");
+    size_t named=SIZE_MAX;for(size_t i=0;i<s.entries.size();++i)if(s.entries[i].uid=="U00213"){named=i;break;}
+    if(named==SIZE_MAX||!s.entries[named].header_words)return 22;
+    place(named,0,2);if(!s.active||s.visible!=0||s.text_y!=40)return 23;
+    cpu.gpr[21]=s.owner_index;cpu.gpr[4]=0x80010000;cpu.gpr[31]=0x8004bdb0;
+    if(glyph(&cpu)!=0)return 24; // Original speaker glyph must survive.
+    place(named,0,s.entries[named].header_words+10);if(!s.active||!s.visible)return 25;
+    std::puts("named dialogue: U00213 header retained, body shifted one line, source progress includes header passed");
     std::printf("batch_probe: %zu records validated; replacement, backward seek, wait, clear, mid-dialogue recovery, width rejection, slot isolation passed\n",s.entries.size());return 0;
 }

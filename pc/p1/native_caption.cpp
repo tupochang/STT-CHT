@@ -19,13 +19,14 @@ extern "C" {
 #include "psx_memory.h"
 #include "func_override.h"
 #include "host_overlay.h"
+void stt_pc_controls_frame(void);
 }
 #include "core_panel.h"
 #include "caption_progress.h"
 #include "caption_layout.h"
 
 namespace {
-struct Entry {std::string uid;std::vector<unsigned char> raw;std::wstring text;std::vector<size_t> timeline;std::vector<std::vector<unsigned char>> contexts;};
+struct Entry {std::string uid;std::vector<unsigned char> raw;std::wstring text;std::vector<size_t> timeline;std::vector<std::vector<unsigned char>> contexts;uint32_t header_words=0;};
 struct State {
     std::mutex mutex;
     std::vector<unsigned char> signature, pixels;
@@ -82,22 +83,24 @@ void load(State& s) {
     s.loaded = true;
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
     std::wstring dir(exe);dir.resize(dir.find_last_of(L"\\/")+1);
-    std::ifstream batch(std::filesystem::path(dir+L"p1-data\\dialogues.bin"),std::ios::binary);
+    auto batch_path=std::filesystem::path(dir+L"pc-data\\dialogues.bin");
+    if(!std::filesystem::exists(batch_path))batch_path=std::filesystem::path(dir+L"p1-data\\dialogues.bin");
+    std::ifstream batch(batch_path,std::ios::binary);
     if(batch) {
         char magic[8];uint32_t count=0;batch.read(magic,8);batch.read(reinterpret_cast<char*>(&count),4);
-        if(!batch || std::string(magic,8)!="STTB0002"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
+        if(!batch || std::string(magic,8)!="STTB0003"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
         for(uint32_t i=0;i<count;++i){uint32_t n=0,r=0,t=0;
             batch.read(reinterpret_cast<char*>(&n),4);batch.read(reinterpret_cast<char*>(&r),4);batch.read(reinterpret_cast<char*>(&t),4);
             if(!batch||n>32||r<8||r>2048||r%2||t>16384){s.entries.clear();s.index.clear();return;}
             Entry e;e.uid.resize(n);e.raw.resize(r);std::string utf8(t,'\0');
             batch.read(e.uid.data(),n);batch.read(reinterpret_cast<char*>(e.raw.data()),r);batch.read(utf8.data(),t);
-            uint32_t contexts=0;batch.read(reinterpret_cast<char*>(&contexts),4);
+            uint32_t contexts=0;batch.read(reinterpret_cast<char*>(&e.header_words),4);batch.read(reinterpret_cast<char*>(&contexts),4);
             if(!batch||contexts==0||contexts>50000){s.entries.clear();s.index.clear();return;}
             for(uint32_t j=0;j<contexts;++j){std::vector<unsigned char> c(16);batch.read(reinterpret_cast<char*>(c.data()),16);e.contexts.push_back(std::move(c));}
             int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,utf8.data(),t,nullptr,0);
             if(!batch||size<=0){s.entries.clear();s.index.clear();return;}
             e.text.resize(size);MultiByteToWideChar(CP_UTF8,0,utf8.data(),t,e.text.data(),size);
-            try{e.timeline=stt_caption::timeline(e.raw,e.text);}catch(...){s.entries.clear();s.index.clear();return;}
+            try{e.timeline=stt_caption::timeline(e.raw,e.text,e.header_words);}catch(...){s.entries.clear();s.index.clear();return;}
             s.max_signature=std::max(s.max_signature,e.raw.size());s.index[prefix(e.raw)].push_back(s.entries.size());s.entries.push_back(std::move(e));
         }
         std::fprintf(stderr,"STT_P1 batch loaded records=%zu\n",s.entries.size());return;
@@ -204,6 +207,7 @@ int refresh(CPUState*) {
             size_t visible=timeline[sample.words];
             uint32_t xy=0;peek(table+4,xy);int x=static_cast<int16_t>(xy>>16);
             peek(table+8,xy);int y=static_cast<int16_t>(xy&65535);
+            if(selected<s.entries.size() && s.entries[selected].header_words)y+=16;
             int lines=1+static_cast<int>(std::count(caption.begin(),caption.end(),L'\n'));
             bool changed=!s.active || s.base!=base || s.entry_index!=selected || s.owner_index!=slot;
             if(!s.entries.empty() && (!s.renderer_ready || !stt_caption::valid_text_origin(x,y,lines) || ((changed||s.text_x!=x)&&!fits(caption,x))))continue;
@@ -228,6 +232,7 @@ int refresh(CPUState*) {
     return 0; // Original guest function and its cycle accounting execute unchanged.
 }
 int frame_sync(CPUState* cpu) {
+    stt_pc_controls_frame();
     // This entry runs after scene updates, even when dialogue updates stop.
     refresh(cpu);
     auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
@@ -246,7 +251,11 @@ int frame_sync(CPUState* cpu) {
 }
 int glyph(CPUState* cpu) {
     bool suppress;{auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
-        suppress=s.active&&s.in_frame&&s.renderer_ready && (cpu->gpr[21]&255)==s.owner_index;}
+        suppress=s.active&&s.in_frame&&s.renderer_ready && (cpu->gpr[21]&255)==s.owner_index;
+        if(suppress && s.entry_index<s.entries.size() && s.entries[s.entry_index].header_words){
+            uint32_t ptr=0;peek(0x800c6b88+s.owner_index*44+0x20,ptr);
+            suppress=ptr>=s.base+s.entries[s.entry_index].header_words*2;
+        }}
     uint32_t primitive=cpu->gpr[4],offset=0;
     if(!suppress || cpu->gpr[31]!=0x8004bdb0 || !psx_ram_resolve(primitive,32,&offset))return 0;
     // Lookup and timing execute normally. Only sprite height is hidden; width

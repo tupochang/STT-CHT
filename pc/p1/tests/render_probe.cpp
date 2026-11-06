@@ -2,6 +2,7 @@
 // foreign shader already bound. No game or guest RAM runs in this probe.
 #include "../native_caption.cpp"
 extern "C" {
+void stt_pc_controls_frame(){}
 unsigned probeOriginalCalls=0;uint16_t probeWidth=0,probeHeight=0;
 uint32_t g_psx_ram_mask=0x1fffff, g_psx_ram_size=0x200000;
 int psx_peek_word(uint32_t,uint32_t*) {return 0;}

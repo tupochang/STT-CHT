@@ -5,8 +5,13 @@
 #include <cstdint>
 namespace stt_caption {
 // Plain single-page dialogue. Unknown controls decline rather than guessing.
-inline std::vector<size_t> timeline(const std::vector<unsigned char>& raw,const std::wstring& text) {
+inline std::vector<size_t> timeline(const std::vector<unsigned char>& raw,const std::wstring& text,size_t header_words=0) {
     if(raw.empty() || raw.size()%2) throw std::runtime_error("Invalid source words");
+    if(header_words>=raw.size()/2)throw std::runtime_error("Invalid speaker header");
+    if(header_words){
+        std::vector<unsigned char> body(raw.begin()+header_words*2,raw.end());
+        auto map=timeline(body,text);std::vector<size_t> out(header_words,0);out.insert(out.end(),map.begin(),map.end());return out;
+    }
     std::vector<std::wstring> lines(1);
     for(wchar_t c:text){if(c==L'\n')lines.emplace_back();else if(c!=L'\r')lines.back()+=c;}
     std::vector<size_t> lengths(1,0);
