@@ -79,6 +79,8 @@ void draw(int width,int height,void*) {
     if(!s.active) return;
     if(s.pixels.empty()) raster(s);
     if(s.pixels.empty()) return;
+    GLboolean incomingStencil=glIsEnabled(GL_STENCIL_TEST),incomingMask[4];
+    glGetBooleanv(GL_COLOR_WRITEMASK,incomingMask);
     using UseProgram = void (APIENTRY*)(GLuint);
     using ActiveTexture = void (APIENTRY*)(GLenum);
     auto useProgram=reinterpret_cast<UseProgram>(wglGetProcAddress("glUseProgram"));
@@ -88,6 +90,7 @@ void draw(int width,int height,void*) {
     if(activeTexture) {glGetIntegerv(0x84E0,&oldActiveTexture);activeTexture(0x84C0);}
     // Presentation-only proof: a full caption panel, not final typewriter/layout.
     glPushAttrib(GL_ALL_ATTRIB_BITS);glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);glDisable(GL_COLOR_LOGIC_OP);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
     glDisable(GL_LIGHTING);glDisable(GL_FOG);glDisable(GL_CULL_FACE);glDisable(GL_ALPHA_TEST);glViewport(0,0,width,height);
     glPolygonMode(GL_FRONT_AND_BACK,GL_FILL);
     glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_REPLACE);
@@ -103,7 +106,8 @@ void draw(int width,int height,void*) {
     if(activeTexture) activeTexture(oldActiveTexture);
     if(useProgram) useProgram(oldProgram);
     static bool reported=false;
-    if(!reported) {std::fprintf(stderr,"STT_P1 native panel drawn %dx%d\n",width,height);reported=true;}
+    if(!reported) {std::fprintf(stderr,"STT_P1 panel submitted %dx%d incoming_stencil=%d mask=%d%d%d%d\n",width,height,
+        incomingStencil,incomingMask[0],incomingMask[1],incomingMask[2],incomingMask[3]);reported=true;}
 }
 int observe(CPUState* cpu, bool is_general) {
     auto& s=state();

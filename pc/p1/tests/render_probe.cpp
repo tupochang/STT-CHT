@@ -11,7 +11,7 @@ int main() {
     HWND win=CreateWindowW(L"STATIC",L"Caption render probe",WS_POPUP,0,0,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
     HDC dc=GetDC(win);
     PIXELFORMATDESCRIPTOR fmt{};fmt.nSize=sizeof(fmt);fmt.nVersion=1;
-    fmt.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL;fmt.iPixelType=PFD_TYPE_RGBA;fmt.cColorBits=32;
+    fmt.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL;fmt.iPixelType=PFD_TYPE_RGBA;fmt.cColorBits=32;fmt.cStencilBits=8;
     if(!SetPixelFormat(dc,ChoosePixelFormat(dc,&fmt),&fmt)) return 2;
     HGLRC context=wglCreateContext(dc);if(!wglMakeCurrent(dc,context)) return 3;
     using CreateShader=GLuint(APIENTRY*)(GLenum);
@@ -34,8 +34,13 @@ int main() {
     GLuint v=createShader(0x8B31),f=createShader(0x8B30);source(v,1,&vs,nullptr);source(f,1,&fs,nullptr);compile(v);compile(f);
     GLuint program=createProgram();attach(program,v);attach(program,f);link(program);use(program);
     glViewport(0,0,640,480);glClearColor(0,0,1,1);glClear(GL_COLOR_BUFFER_BIT);
+    // The PS1 mask-bit renderer can leave stencil rejection and color masks
+    // active. The HUD must draw independently, then restore those states.
+    glEnable(GL_STENCIL_TEST);glStencilFunc(GL_NEVER,0,~0u);glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
     auto& s=state();load(s);s.active=true;draw(640,480,nullptr);glFinish();
     GLint restored=0;glGetIntegerv(0x8B8D,&restored);
+    GLboolean mask[4];glGetBooleanv(GL_COLOR_WRITEMASK,mask);
+    bool stateRestored=glIsEnabled(GL_STENCIL_TEST)&&!mask[0]&&!mask[1]&&!mask[2]&&!mask[3];
     GLenum error=glGetError();
     std::vector<unsigned char> rgba(640*480*4);glReadPixels(0,0,640,480,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());
     size_t white=0,dark=0;
@@ -47,9 +52,9 @@ int main() {
     BITMAPFILEHEADER file{};file.bfType=0x4d42;file.bfOffBits=sizeof(file)+sizeof(BITMAPINFOHEADER);file.bfSize=file.bfOffBits+rgba.size();
     BITMAPINFOHEADER info{};info.biSize=sizeof(info);info.biWidth=640;info.biHeight=480;info.biPlanes=1;info.biBitCount=32;
     std::ofstream bmp("work/p0/p1-native-panel.bmp",std::ios::binary);bmp.write((char*)&file,sizeof(file));bmp.write((char*)&info,sizeof(info));bmp.write((char*)rgba.data(),rgba.size());bmp.close();
-    s.active=false;glClear(GL_COLOR_BUFFER_BIT);draw(640,480,nullptr);unsigned char pixel[4];glReadPixels(20,20,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+    s.active=false;glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glDisable(GL_STENCIL_TEST);glClear(GL_COLOR_BUFFER_BIT);draw(640,480,nullptr);unsigned char pixel[4];glReadPixels(20,20,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
     bool clear=pixel[0]==0&&pixel[1]==0&&pixel[2]==255;
-    std::printf("render_probe white=%zu dark=%zu shader_restored=%d clear=%d GL_error=%u\n",white,dark,restored==(GLint)program,clear,error);
+    std::printf("render_probe white=%zu dark=%zu shader_restored=%d mask_stencil_restored=%d clear=%d GL_error=%u\n",white,dark,restored==(GLint)program,stateRestored,clear,error);
     wglMakeCurrent(nullptr,nullptr);wglDeleteContext(context);ReleaseDC(win,dc);DestroyWindow(win);
-    return white>100&&dark>10000&&restored==(GLint)program&&clear&&error==GL_NO_ERROR?0:5;
+    return white>100&&dark>10000&&restored==(GLint)program&&stateRestored&&clear&&error==GL_NO_ERROR?0:5;
 }
