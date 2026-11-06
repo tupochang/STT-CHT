@@ -4,6 +4,8 @@
 
 ## 已驗證
 
+- 2026-11-06：Windows P0 日文基準程式已建置，使用者確認標題、選角、第一關、輸入與存讀檔通過。現在進入單段繁中接入階段，詳見 [P0 驗證報告](docs/stt2001_pc_p0_build_validation.md)。
+
 - `ROM/Super Tokusatsu Taisen 2001 (Japan).bin` 是 2352 位元組扇區的 PS1 光碟映像，含 ISO 9660 檔案系統。
 - `SYSTEM.CNF` 指向 `SLPS_028.63`，其標頭是 `PS-X EXE`；原生 PC 程式不會執行此檔。
 - `EVENT.DAT`、`STAGE.DAT` 等檔案的首扇區是 16 位元扇區偏移索引。
