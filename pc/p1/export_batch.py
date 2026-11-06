@@ -60,7 +60,7 @@ def main():
         uid = row['uid']; text = translations.get(uid, '')
         reason = None
         if not text.strip(): reason = 'missing_translation'
-        elif re.search(r'[<>\[\]{}]',text): reason = 'translation_controls_or_variables'
+        elif re.search(r'[<>\[\]{}]',text.replace('<p>','')): reason = 'translation_controls_or_variables'
         elif row['term'] not in ('FFFD','FFFE'): reason = 'unsupported_terminal'
         if reason:
             skipped.append({'id':row['id'],'uid':uid,'reason':reason}); continue
@@ -76,9 +76,8 @@ def main():
             header = words.index(0xff30)+1
             if header<len(words) and words[header]==0xfffb: header+=1
         body = words[header:]
-        if not reason and any(c>=0xff00 and c not in (0xfffb,0xfffd,0xfffe) for c in body): reason = 'source_controls'
-        elif not reason and text.count('\n') != body.count(0xfffb): reason = 'line_count_mismatch'
-        elif not reason and text.count('\n')+bool(header)>=4: reason = 'more_than_four_lines'
+        if not reason and any(c>=0xff00 and c not in (0xfffb,0xfffc,0xfffd,0xfffe) for c in body): reason = 'source_controls'
+        elif not reason and len(text.split('<p>')) != body.count(0xfffc)+1: reason = 'page_count_mismatch'
         if reason:
             skipped.append({'id':row['id'],'uid':uid,'reason':reason}); continue
         raw = struct.pack(f'<{len(words)}H',*words)
@@ -99,14 +98,24 @@ def main():
         eligible.extend({'id':r['id'],'uid':r['uid']} for r in rr)
     records.sort()
     out = ROOT/'pc/p1/data'; out.mkdir(parents=True,exist_ok=True)
-    pack = bytearray(b'STTB0003'+struct.pack('<I',len(records)))
+    pack = bytearray(b'STTB0004'+struct.pack('<I',len(records)))
     for uid,raw,text,contexts,header in records:
         u,t = uid.encode(),text.encode('utf-8')
         pack += struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
         pack += struct.pack('<II',header,len(contexts))+b''.join(contexts)
     (out/'dialogues.bin').write_bytes(pack)
-    # Keep the former frame-sync executable usable with its v2 data format.
-    legacy_records=[r for r in records if not r[4]]
+    # Preserve the old, strict single-page data for both earlier executables.
+    def single_page(r):
+        _,raw,text,_,header=r
+        words=struct.unpack(f'<{len(raw)//2}H',raw)[header:]
+        return 0xfffc not in words and '<p>' not in text and text.count('\n')==words.count(0xfffb) and text.count('\n')+bool(header)<4
+    previous=[r for r in records if single_page(r)]
+    prior=bytearray(b'STTB0003'+struct.pack('<I',len(previous)))
+    for uid,raw,text,contexts,header in previous:
+        u,t=uid.encode(),text.encode('utf-8');prior+=struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
+        prior+=struct.pack('<II',header,len(contexts))+b''.join(contexts)
+    (out/'dialogues-v3.bin').write_bytes(prior)
+    legacy_records=[r for r in previous if not r[4]]
     legacy=bytearray(b'STTB0002'+struct.pack('<I',len(legacy_records)))
     for uid,raw,text,contexts,header in legacy_records:
         u,t=uid.encode(),text.encode('utf-8')

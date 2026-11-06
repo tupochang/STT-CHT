@@ -33,7 +33,7 @@ inline std::vector<size_t> timeline(const std::vector<unsigned char>& raw,const 
 }
 struct Sample {bool visible=false;size_t words=0;};
 inline Sample sample(uint32_t base,size_t size,uint32_t flags,unsigned mode,uint32_t pointer) {
-    if(!(flags&1) || (mode!=0 && mode!=4 && mode!=5) || pointer<base || ((pointer-base)&1))return {};
+    if(!(flags&1) || (mode!=0 && mode!=1 && mode!=4 && mode!=5) || pointer<base || ((pointer-base)&1))return {};
     size_t delta=pointer-base;
     if(delta>size || (delta==size && mode==0))return {};
     return {true,delta/2};

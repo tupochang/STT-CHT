@@ -103,6 +103,11 @@ int main() {
     glReadPixels(20,20,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixel);if(pixel[0]!=0||pixel[1]!=0||pixel[2]!=255)return 17;
     s.tint[0]=s.tint[1]=s.tint[2]=1;
     std::printf("fade render half-bright pixels=%zu black fade skipped\n",gray);
+    auto& other=extra_state(1);other.active=true;other.in_frame=true;other.text_x=32;other.text_y=170;other.lines=1;other.caption=L"我方全滅時";other.visible=other.caption.size();other.pixels.clear();
+    glClear(GL_COLOR_BUFFER_BIT);draw(640,480,nullptr);glReadPixels(0,0,640,480,GL_RGBA,GL_UNSIGNED_BYTE,rgba.data());size_t lower=0;
+    for(int y=108;y<140;++y)for(int x=64;x<608;++x){size_t i=(y*640+x)*4;if(rgba[i]>200&&rgba[i+1]>200&&rgba[i+2]>200)++lower;}
+    if(lower<100)return 18;other.active=false;
+    std::printf("parallel slot rendering: lower slot text pixels=%zu\n",lower);
     std::printf("hide/release hidden_white=%zu restored_white=%zu progress_preserved=%d\n",hiddenWhite,resumedWhite,s.visible==kept);
     std::printf("inframe white=%zu transparent_background=%zu outside_white=%zu layout=%d glyph_width_preserved=%d\n",inWhite,inBlue,outWhite,layoutOK,probeWidth==12);
     std::printf("render_probe core_profile=%d white=%zu dark=%zu shader_restored=%d mask_stencil_restored=%d clear=%d GL_error=%u\n",profile,white,dark,restored==(GLint)program,stateRestored,clear,error);

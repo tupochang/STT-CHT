@@ -13,7 +13,9 @@
 #include <mutex>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
+#include <climits>
 extern "C" {
 #include "cpu_state.h"
 #include "psx_memory.h"
@@ -24,9 +26,11 @@ void stt_pc_controls_frame(void);
 #include "core_panel.h"
 #include "caption_progress.h"
 #include "caption_layout.h"
+#include "caption_pages.h"
+#include "caption_reflow.h"
 
 namespace {
-struct Entry {std::string uid;std::vector<unsigned char> raw;std::wstring text;std::vector<size_t> timeline;std::vector<std::vector<unsigned char>> contexts;uint32_t header_words=0;};
+struct Entry {std::string uid;std::vector<unsigned char> raw;std::wstring text;std::vector<size_t> timeline;std::vector<std::vector<unsigned char>> contexts;uint32_t header_words=0;std::vector<stt_caption::Page> pages;};
 struct State {
     std::mutex mutex;
     std::vector<unsigned char> signature, pixels;
@@ -43,9 +47,16 @@ struct State {
     std::vector<Entry> entries;
     std::unordered_map<uint64_t,std::vector<size_t>> index;
     size_t entry_index=SIZE_MAX,max_signature=0;
+    size_t page_index=0;
+    std::unordered_set<std::string> rejected;
     float tint[3]={1,1,1};
+    unsigned fixed_slot=0;
 };
-State& state() { static State s; return s; }
+State& primary_state() { static State s; return s; }
+State& extra_state(unsigned slot){static State extra[2];return extra[slot-1];}
+thread_local State* current_slot_state=nullptr;
+State& state() {return current_slot_state?*current_slot_state:primary_state();}
+struct SlotScope {State* previous;SlotScope(State& s):previous(current_slot_state){current_slot_state=&s;}~SlotScope(){current_slot_state=previous;}};
 PanelGL& panel_state(){static PanelGL panel;return panel;}
 void warmup(int,int,void*) {
     auto& s=state();bool ready;
@@ -79,16 +90,22 @@ bool fits(const std::wstring& text,int x) {
         if(!GetTextExtentPoint32W(dc,text.data()+start,static_cast<int>(end-start),&size)||size.cx>(304-x)*2)ok=false;start=end+1;}
     SelectObject(dc,old);DeleteObject(font);DeleteDC(dc);return ok;
 }
+bool layout_page(const std::wstring& text,int x,unsigned lines,std::wstring& output){
+    HDC dc=CreateCompatibleDC(nullptr);HFONT font=CreateFontW(-28,0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,NONANTIALIASED_QUALITY,DEFAULT_PITCH,L"Microsoft JhengHei");
+    auto old=SelectObject(dc,font);
+    bool result=stt_caption::reflow(text,(304-x)*2,lines,[&](const std::wstring& t){SIZE size{};return GetTextExtentPoint32W(dc,t.data(),int(t.size()),&size)?size.cx:INT_MAX;},output);
+    SelectObject(dc,old);DeleteObject(font);DeleteDC(dc);return result;
+}
 void load(State& s) {
     s.loaded = true;
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
     std::wstring dir(exe);dir.resize(dir.find_last_of(L"\\/")+1);
-    auto batch_path=std::filesystem::path(dir+L"pc-data\\dialogues.bin");
+    auto batch_path=std::filesystem::path(dir+L"pc-data-v4\\dialogues.bin");
     if(!std::filesystem::exists(batch_path))batch_path=std::filesystem::path(dir+L"p1-data\\dialogues.bin");
     std::ifstream batch(batch_path,std::ios::binary);
     if(batch) {
         char magic[8];uint32_t count=0;batch.read(magic,8);batch.read(reinterpret_cast<char*>(&count),4);
-        if(!batch || std::string(magic,8)!="STTB0003"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
+        if(!batch || std::string(magic,8)!="STTB0004"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
         for(uint32_t i=0;i<count;++i){uint32_t n=0,r=0,t=0;
             batch.read(reinterpret_cast<char*>(&n),4);batch.read(reinterpret_cast<char*>(&r),4);batch.read(reinterpret_cast<char*>(&t),4);
             if(!batch||n>32||r<8||r>2048||r%2||t>16384){s.entries.clear();s.index.clear();return;}
@@ -100,7 +117,8 @@ void load(State& s) {
             int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,utf8.data(),t,nullptr,0);
             if(!batch||size<=0){s.entries.clear();s.index.clear();return;}
             e.text.resize(size);MultiByteToWideChar(CP_UTF8,0,utf8.data(),t,e.text.data(),size);
-            try{e.timeline=stt_caption::timeline(e.raw,e.text,e.header_words);}catch(...){s.entries.clear();s.index.clear();return;}
+            try{e.pages=stt_caption::pages(e.raw,e.text,e.header_words);}catch(...){s.entries.clear();s.index.clear();return;}
+            if(e.pages.size()==1){try{e.timeline=stt_caption::timeline(e.raw,e.text,e.header_words);}catch(...){}}
             s.max_signature=std::max(s.max_signature,e.raw.size());s.index[prefix(e.raw)].push_back(s.entries.size());s.entries.push_back(std::move(e));
         }
         std::fprintf(stderr,"STT_P1 batch loaded records=%zu\n",s.entries.size());return;
@@ -144,7 +162,7 @@ void raster(State& s) {
     for(size_t i=0;i<s.pixels.size();i+=4){s.pixels[i]=src[i+2];s.pixels[i+1]=src[i+1];s.pixels[i+2]=src[i];s.pixels[i+3]=s.in_frame?std::max({src[i],src[i+1],src[i+2]}):255;}
     SelectObject(dc,oldFont);DeleteObject(font);SelectObject(dc,old);DeleteObject(bm);DeleteDC(dc);
 }
-void draw(int width,int height,void*) {
+void draw_slot(int width,int height,void*) {
     auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
     auto& panel=panel_state();
     s.renderer_ready=panel.init();
@@ -162,7 +180,11 @@ void draw(int width,int height,void*) {
     if(!reported) {std::fprintf(stderr,"STT_P1 panel submitted %dx%d incoming_stencil=%d mask=%d%d%d%d\n",width,height,
         incomingStencil,incomingMask[0],incomingMask[1],incomingMask[2],incomingMask[3]);reported=true;}
 }
-int refresh(CPUState*) {
+void draw(int width,int height,void*){
+    {SlotScope scope(primary_state());draw_slot(width,height,nullptr);}
+    for(unsigned slot=1;slot<3;++slot){SlotScope scope(extra_state(slot));draw_slot(width,height,nullptr);}
+}
+int refresh_slot(CPUState*) {
     auto& s=state();
     {
         std::lock_guard<std::mutex> lock(s.mutex);
@@ -170,10 +192,11 @@ int refresh(CPUState*) {
         if(s.signature.empty() && s.entries.empty()) return 0;
         bool found=false;
         for(unsigned slot=0;slot<3;++slot) {
+            if(slot!=s.fixed_slot)continue;
             uint32_t table=0x800c6b88+slot*44,flags=0,modeWord=0,ptr=0;
             if(!peek(table,flags)||!(flags&1)||!peek(table+0x10,modeWord)||!peek(table+0x20,ptr))continue;
             unsigned mode=modeWord&255;
-            if(mode!=0 && mode!=4 && mode!=5)continue;
+            if(mode!=0 && mode!=1 && mode!=4 && mode!=5)continue;
             if(ptr<0x80010000 || ptr>0x80200000)continue;
             uint32_t base=0;
             size_t selected=SIZE_MAX;
@@ -200,26 +223,39 @@ int refresh(CPUState*) {
             }
             if(!base)continue;
             const auto& raw=selected<s.entries.size()?s.entries[selected].raw:s.signature;
-            const auto& caption=selected<s.entries.size()?s.entries[selected].text:s.caption;
-            const auto& timeline=selected<s.entries.size()?s.entries[selected].timeline:s.timeline;
             auto sample=stt_caption::sample(base,raw.size(),flags,mode,ptr);
-            if(!sample.visible || sample.words>=timeline.size())continue;
-            size_t visible=timeline[sample.words];
+            if(!sample.visible)continue;
             uint32_t xy=0;peek(table+4,xy);int x=static_cast<int16_t>(xy>>16);
             peek(table+8,xy);int y=static_cast<int16_t>(xy&65535);
-            if(selected<s.entries.size() && s.entries[selected].header_words)y+=16;
-            int lines=1+static_cast<int>(std::count(caption.begin(),caption.end(),L'\n'));
-            bool changed=!s.active || s.base!=base || s.entry_index!=selected || s.owner_index!=slot;
-            if(!s.entries.empty() && (!s.renderer_ready || !stt_caption::valid_text_origin(x,y,lines) || ((changed||s.text_x!=x)&&!fits(caption,x))))continue;
+            size_t page=0,local_words=sample.words;bool named=false;
+            if(selected<s.entries.size()){
+                const auto& e=s.entries[selected];page=stt_caption::page_index(e.pages,sample.words,mode);
+                local_words=sample.words>e.pages[page].begin?sample.words-e.pages[page].begin:0;
+                named=e.header_words&&page==0;if(named)y+=16;
+            }
+            bool changed=!s.active || s.base!=base || s.entry_index!=selected || s.owner_index!=slot || s.page_index!=page || s.text_x!=x || s.text_y!=y;
+            if(selected<s.entries.size() && (!s.renderer_ready || !stt_caption::valid_text_origin(x,y,1)))continue;
             if(changed) {
-                if(selected<s.entries.size()){const auto& e=s.entries[selected];s.signature=e.raw;s.caption=e.text;s.timeline=e.timeline;}
+                if(selected<s.entries.size()){
+                    const auto& e=s.entries[selected];std::wstring laid_out;
+                    unsigned max_lines=std::min(unsigned(4-named),unsigned((240-y)/16));
+                    std::string key=e.uid+":"+std::to_string(page)+":"+std::to_string(x)+":"+std::to_string(max_lines);
+                    if(s.rejected.count(key))continue;
+                    if(!layout_page(e.pages[page].text,x,max_lines,laid_out)){
+                        if(s.rejected.size()<512&&s.rejected.insert(key).second)std::fprintf(stderr,"STT_P1 rejected %s page=%zu reason=page_capacity x=%d y=%d lines=%u\n",e.uid.c_str(),page,x,y,max_lines);
+                        continue;
+                    }
+                    s.signature=e.raw;s.caption=laid_out;s.timeline=stt_caption::page_timeline(e.pages[page],laid_out);
+                }
                 s.pixels.clear();
-                s.lines=lines;s.entry_index=selected;
+                s.lines=1+int(std::count(s.caption.begin(),s.caption.end(),L'\n'));s.entry_index=selected;s.page_index=page;
                 s.presentation_visible=true;
                 s.in_frame=s.renderer_ready && stt_caption::valid_text_origin(x,y,s.lines);
                 std::fprintf(stderr,"STT_P1 layout slot=%u x=%d y=%d in_frame=%d renderer=%d\n",slot,x,y,s.in_frame,s.renderer_ready);
-                if(selected<s.entries.size())std::fprintf(stderr,"STT_P1 matched %s base=%08x\n",s.entries[selected].uid.c_str(),base);
+                if(selected<s.entries.size())std::fprintf(stderr,"STT_P1 matched %s base=%08x page=%zu/%zu reflow=%d\n",s.entries[selected].uid.c_str(),base,page+1,s.entries[selected].pages.size(),s.caption!=s.entries[selected].pages[page].text);
             }
+            if(local_words>=s.timeline.size())continue;
+            size_t visible=s.timeline[local_words];
             if(s.text_x!=x || s.text_y!=y)s.pixels.clear();s.text_x=x;s.text_y=y;
             if(!s.active || s.base!=base || s.visible!=visible || s.source_words!=sample.words)
                 std::fprintf(stderr,"STT_P1 progress slot=%u mode=%u ptr=%08x words=%zu chars=%zu\n",slot,mode,ptr,sample.words,visible);
@@ -228,8 +264,17 @@ int refresh(CPUState*) {
         }
         if(!found && s.active){std::fprintf(stderr,"STT_P1 cleared inactive/replaced dialogue\n");s.active=false;s.base=0;s.visible=0;s.pixels.clear();}
     }
-    psx_host_set_hud_draw_cb(draw,nullptr);
     return 0; // Original guest function and its cycle accounting execute unchanged.
+}
+int refresh(CPUState* cpu){
+    {SlotScope scope(primary_state());refresh_slot(cpu);}
+    bool renderer_ready;{std::lock_guard<std::mutex> lock(primary_state().mutex);renderer_ready=primary_state().renderer_ready;}
+    for(unsigned slot=1;slot<3;++slot){
+        auto& extra=extra_state(slot);uint32_t flags=0;bool active;
+        {std::lock_guard<std::mutex> lock(extra.mutex);active=extra.active;extra.fixed_slot=slot;extra.renderer_ready=renderer_ready;}
+        if(active || (peek(0x800c6b88+slot*44,flags)&&(flags&1))){SlotScope scope(extra);refresh_slot(cpu);}
+    }
+    psx_host_set_hud_draw_cb(draw,nullptr);return 0;
 }
 int frame_sync(CPUState* cpu) {
     stt_pc_controls_frame();
@@ -247,10 +292,12 @@ int frame_sync(CPUState* cpu) {
     if(s.active && (s.tint[0]!=tint[0]||s.tint[1]!=tint[1]||s.tint[2]!=tint[2]))
         std::fprintf(stderr,"STT_P1 frame tint=%.3f,%.3f,%.3f\n",tint[0],tint[1],tint[2]);
     std::copy(tint,tint+3,s.tint);
+    for(unsigned slot=1;slot<3;++slot){auto& extra=extra_state(slot);std::lock_guard<std::mutex> guard(extra.mutex);std::copy(tint,tint+3,extra.tint);}
     return 0;
 }
 int glyph(CPUState* cpu) {
-    bool suppress;{auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
+    unsigned owner=cpu->gpr[21]&255;if(owner>=3)return 0;
+    bool suppress;{auto& s=owner?extra_state(owner):primary_state();std::lock_guard<std::mutex> lock(s.mutex);
         suppress=s.active&&s.in_frame&&s.renderer_ready && (cpu->gpr[21]&255)==s.owner_index;
         if(suppress && s.entry_index<s.entries.size() && s.entries[s.entry_index].header_words){
             uint32_t ptr=0;peek(0x800c6b88+s.owner_index*44+0x20,ptr);
@@ -270,10 +317,11 @@ int presentation(CPUState* cpu) {
     bool hiding=cpu->gpr[31]==0x80021df8 && cpu->gpr[4]==4;
     bool showing=cpu->gpr[31]==0x80021e08 && cpu->gpr[4]==1;
     if(!hiding&&!showing)return 0;
-    auto& s=state();std::lock_guard<std::mutex> lock(s.mutex);
-    if(s.active && s.presentation_visible!=showing) {
-        s.presentation_visible=showing;
-        std::fprintf(stderr,"STT_P1 presentation visible=%d chars=%zu\n",showing,s.visible);
+    for(unsigned slot=0;slot<3;++slot){auto& s=slot?extra_state(slot):primary_state();std::lock_guard<std::mutex> lock(s.mutex);
+        if(s.active && s.presentation_visible!=showing) {
+            s.presentation_visible=showing;
+            std::fprintf(stderr,"STT_P1 presentation visible=%d slot=%u chars=%zu\n",showing,slot,s.visible);
+        }
     }
     return 0; // The original draw-list selection still executes.
 }

@@ -20,12 +20,21 @@ option(STT_P1 "Build the native Chinese dialogue runtime" OFF)
 if(STT_P1)
     target_sources(psx-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/p1/native_caption.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/p1/pc_controls.cpp")
     target_link_libraries(psx-runtime PRIVATE gdi32 opengl32)
-    set_target_properties(psx-runtime PROPERTIES OUTPUT_NAME "STT2001_PC_Chinese")
+    set_target_properties(psx-runtime PROPERTIES OUTPUT_NAME "STT2001_PC_Chinese_Paged")
     add_custom_command(TARGET psx-runtime POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/config.ini" "$<TARGET_FILE_DIR:psx-runtime>/config.ini"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/stt2001.cht" "$<TARGET_FILE_DIR:psx-runtime>/stt2001.cht"
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/p1/data"
-            "$<TARGET_FILE_DIR:psx-runtime>/pc-data"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:psx-runtime>/p1-data"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/p1/data/dialogues-legacy.bin" "$<TARGET_FILE_DIR:psx-runtime>/p1-data/dialogues.bin")
+            "$<TARGET_FILE_DIR:psx-runtime>/pc-data-v4")
+    # Earlier executables retain their own data instead of being upgraded in place.
+    if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/pc-data/dialogues.bin")
+        add_custom_command(TARGET psx-runtime POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:psx-runtime>/pc-data"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/p1/data/dialogues-v3.bin" "$<TARGET_FILE_DIR:psx-runtime>/pc-data/dialogues.bin")
+    endif()
+    if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/p1-data/dialogues.bin")
+        add_custom_command(TARGET psx-runtime POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:psx-runtime>/p1-data"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/p1/data/dialogues-legacy.bin" "$<TARGET_FILE_DIR:psx-runtime>/p1-data/dialogues.bin")
+    endif()
 endif()
