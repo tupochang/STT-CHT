@@ -24,6 +24,8 @@ powershell -ExecutionPolicy Bypass -File "D:\STT\pc\launch-p1.ps1"
 
 從新遊戲進入第一段「地球は狙われている！」旁白，確認是否出現「地球正遭到覬覦！」等四行繁中面板、字形是否清楚，以及翻到下一段後面板是否消失。其他段落預期仍為日文。
 
-執行日誌在 `pc/build-runtime/p1-session.log`，命中證據是 `STT_P1 matched U00208 ptr=... ra=...`。若沒有出現，先根據有限的 `STT_P1 observe` 日誌確認實際參數，不擴大回填全量譯文。
+執行日誌在 `pc/build-runtime/p1-session.log`（stdout）及 `p1-session.stderr.log`（診斷），命中證據是 `STT_P1 matched U00208 ptr=... ra=...`。若沒有出現，先根據有限的 `STT_P1 observe` 日誌確認實際參數，不擴大回填全量譯文。
+
+Windows PowerShell 5.1 的啟動修正：正常的 `STT_P1 hooks=0,0` 診斷曾被 `2>&1` 配合 `ErrorActionPreference=Stop` 轉成終止錯誤。啟動器改用程序級 stdout／stderr 檔案重導向，並以程序退出碼判定失敗；`0,0` 是兩個掛鉤註冊成功，並非遊戲錯誤。
 
 重建：`pc/build-p1.ps1`。本機建置與啟動日誌在 `work/p0/p1-build.log`、`p1-incremental.log`、`p1-smoke.*.log`。資料特徵與生成檔不進 Git。
