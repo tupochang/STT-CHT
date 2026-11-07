@@ -116,5 +116,22 @@ int main(){
     place(brain,0,s.entries[brain].pages[0].end-1,72,154);
     if(!s.active||s.entry_index!=brain||s.caption.find(L"腦波")==std::wstring::npos||s.caption.find(L"[HERO")!=std::wstring::npos)return 45;
     std::puts("U00161 brain-wave first page is translatable even though a later page contains a hero variable");
+    const auto short_entry=std::find_if(s.entries.begin(),s.entries.end(),[](const Entry& entry){return entry.raw.size()<8;});
+    if(short_entry==s.entries.end())return 49;
+    const auto short_index=static_cast<size_t>(short_entry-s.entries.begin());
+    place(short_index,5,0);
+    if(s.active)return 50;
+    place(short_index,0,0);
+    if(!s.active||s.entry_index!=short_index||s.visible!=0)return 51;
+    word(base+short_entry->raw.size(),0x12345678);
+    s.active=false;
+    word(slot+0x10,5);
+    word(slot+0x20,base+short_entry->raw.size());
+    refresh(nullptr);
+    if(!s.active||s.entry_index!=short_index||s.visible!=s.caption.size())return 52;
+    ram[(base-128)&0x1fffff]^=1;
+    refresh(nullptr);
+    if(s.active)return 53;
+    std::puts("short text: cold lookup, previous-dialogue wait isolation, terminal lookup and context rejection passed");
     std::printf("batch_probe: %zu records validated; replacement, backward seek, wait, clear, mid-dialogue recovery, width rejection, slot isolation passed\n",s.entries.size());return 0;
 }

@@ -91,7 +91,8 @@ def main():
         if start<128:
             skipped.append({'id':row['id'],'uid':uid,'reason':'insufficient_source_context'}); continue
         row = dict(row, context=data[start-128:start], header=header)
-        if len(raw)<8:
+        if len(raw)<8 and (not body[:-1] or any(c>=0xff00 and not 0xff01<=c<=0xff04 for c in body[:-1])
+                           or data[start-2:start] not in (b'\xfd\xff', b'\xfe\xff')):
             skipped.append({'id':row['id'],'uid':uid,'reason':'short_ambiguous_signature'}); continue
         groups.setdefault(raw,{}).setdefault(text,[]).append(row)
     records = []
@@ -109,7 +110,7 @@ def main():
             eligible.extend({'id':r['id'],'uid':r['uid']} for r in good)
     records.sort()
     out = ROOT/'pc/p1/data'; out.mkdir(parents=True,exist_ok=True)
-    pack = bytearray(b'STTB0005'+struct.pack('<I',len(records)))
+    pack = bytearray(b'STTB0006'+struct.pack('<I',len(records)))
     for uid,raw,text,contexts,header in records:
         u,t = uid.encode(),text.encode('utf-8')
         pack += struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
@@ -129,7 +130,7 @@ def main():
         return not any(c in words for c in (0xff01,0xff02,0xff03,0xff04,0xfffc)) and '<p>' not in text and text.count('\n')==words.count(0xfffb) and text.count('\n')+bool(header)<4
     raw_variants={}
     for r in records:raw_variants.setdefault(r[1],set()).add(r[2])
-    previous=[r for r in records if single_page(r) and len(raw_variants[r[1]])==1]
+    previous=[r for r in records if len(r[1])>=8 and single_page(r) and len(raw_variants[r[1]])==1]
     prior=bytearray(b'STTB0003'+struct.pack('<I',len(previous)))
     for uid,raw,text,contexts,header in previous:
         u,t=uid.encode(),text.encode('utf-8');prior+=struct.pack('<III',len(u),len(raw),len(t))+u+raw+t

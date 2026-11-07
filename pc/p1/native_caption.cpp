@@ -79,7 +79,24 @@ bool match(uint32_t a, const std::vector<unsigned char>& signature) {
     return true;
 }
 uint64_t prefix(const std::vector<unsigned char>& raw) {
-    uint64_t key=0;for(unsigned i=0;i<8;++i)key|=uint64_t(raw[i])<<(8*i);return key;
+    uint64_t key=0;
+    for(size_t i=0;i<std::min<size_t>(8,raw.size());++i)key|=uint64_t(raw[i])<<(8*i);
+    return key;
+}
+bool source_prefix(uint32_t address,uint64_t& key) {
+    key=0;
+    for(unsigned i=0;i<4;++i){
+        uint16_t code=0;
+        if(!stt_caption::half(peek,address+i*2,code))return false;
+        key|=uint64_t(code)<<(i*16);
+        if(code==0xfffd||code==0xfffe)break;
+    }
+    return true;
+}
+bool entry_visible(uint32_t base,const Entry& entry,uint32_t flags,unsigned mode,uint32_t ptr){
+    if(entry.raw.size()<8 && mode!=0 &&
+       ((mode!=4 && mode!=5) || ptr!=base+entry.raw.size()))return false;
+    return stt_caption::sample(base,entry.raw.size(),flags,mode,ptr).visible;
 }
 bool match_entry(uint32_t base,const Entry& e){
     if(base<128 || !match(base,e.raw))return false;
@@ -104,17 +121,17 @@ void load(State& s) {
     s.loaded = true;
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
     std::wstring dir(exe);dir.resize(dir.find_last_of(L"\\/")+1);
-    auto batch_path=std::filesystem::path(dir+L"pc-data-v5\\dialogues.bin");
+    auto batch_path=std::filesystem::path(dir+L"pc-data-v6\\dialogues.bin");
     if(!std::filesystem::exists(batch_path))batch_path=std::filesystem::path(dir+L"p1-data\\dialogues.bin");
     std::ifstream batch(batch_path,std::ios::binary);
     if(batch) {
         char magic[8];uint32_t count=0;batch.read(magic,8);batch.read(reinterpret_cast<char*>(&count),4);
-        if(!batch || std::string(magic,8)!="STTB0005"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
+        if(!batch || std::string(magic,8)!="STTB0006"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
         std::ifstream names(batch_path.parent_path()/L"name-glyphs.bin",std::ios::binary);uint32_t name_count=0;names.read(reinterpret_cast<char*>(&name_count),4);
         if(name_count<=65536)for(uint32_t j=0;j<name_count;++j){uint16_t code=0;uint32_t cp=0;names.read(reinterpret_cast<char*>(&code),2);names.read(reinterpret_cast<char*>(&cp),4);if(!names||cp>65535)break;s.name_glyphs[code]=wchar_t(cp);}
         for(uint32_t i=0;i<count;++i){uint32_t n=0,r=0,t=0;
             batch.read(reinterpret_cast<char*>(&n),4);batch.read(reinterpret_cast<char*>(&r),4);batch.read(reinterpret_cast<char*>(&t),4);
-            if(!batch||n>32||r<8||r>2048||r%2||t>16384){s.entries.clear();s.index.clear();return;}
+            if(!batch||n>32||r<4||r>2048||r%2||t>16384){s.entries.clear();s.index.clear();return;}
             Entry e;e.uid.resize(n);e.raw.resize(r);std::string utf8(t,'\0');
             batch.read(e.uid.data(),n);batch.read(reinterpret_cast<char*>(e.raw.data()),r);batch.read(utf8.data(),t);
             uint32_t contexts=0;batch.read(reinterpret_cast<char*>(&e.header_words),4);batch.read(reinterpret_cast<char*>(&contexts),4);
@@ -204,23 +221,21 @@ int refresh_slot(CPUState*) {
             unsigned mode=modeWord&255;
             if(mode!=0 && mode!=1 && mode!=4 && mode!=5)continue;
             auto name_pointer=stt_caption::name_pointer(peek,table,ptr);ptr=name_pointer.source;
-            if(ptr<0x80010000 || ptr>0x80200000)continue;
+            if((ptr&1) || ptr<0x80010000 || ptr>0x80200000)continue;
             uint32_t base=0;
             size_t selected=SIZE_MAX;
             if(!s.entries.empty()) {
                 if(s.active && s.owner_index==slot && s.entry_index<s.entries.size()){
                     const auto& e=s.entries[s.entry_index];
-                    if(stt_caption::sample(s.base,e.raw.size(),flags,mode,ptr).visible && match_entry(s.base,e)){base=s.base;selected=s.entry_index;}
+                    if(entry_visible(s.base,e,flags,mode,ptr) && match_entry(s.base,e)){base=s.base;selected=s.entry_index;}
                 }
                 if(!base)for(size_t back=0;back<=s.max_signature && ptr>=back;back+=2){
                     uint32_t a=ptr-static_cast<uint32_t>(back);
-                    // Source strings are halfword aligned; aligned word reads reconstruct the prefix.
-                    std::vector<unsigned char> bytes(8);bool valid=true;
-                    for(unsigned j=0;j<8;++j){uint32_t word=0;if(!peek((a+j)&~3u,word)){valid=false;break;}bytes[j]=(word>>(((a+j)&3)*8))&255;}
-                    if(!valid)continue;
-                    auto it=s.index.find(prefix(bytes));if(it==s.index.end())continue;
+                    uint64_t key=0;
+                    if(!source_prefix(a,key))continue;
+                    auto it=s.index.find(key);if(it==s.index.end())continue;
                     for(size_t k:it->second){const auto& e=s.entries[k];
-                        if(stt_caption::sample(a,e.raw.size(),flags,mode,ptr).visible && match_entry(a,e)){base=a;selected=k;break;}}
+                        if(entry_visible(a,e,flags,mode,ptr) && match_entry(a,e)){base=a;selected=k;break;}}
                     if(base)break;
                 }
             } else {
