@@ -72,6 +72,16 @@ int main(){
     place(paged,5,s.entries[paged].raw.size()/2);if(!s.active||s.visible!=s.caption.size())return 33;
     place(paged,1,boundary);if(!s.active||s.page_index!=0)return 34;
     std::puts("pages: actual U00211/U00215 reflow, U00221 wait, scroll, next-page reset, progressive reveal, final wait and backward restore passed");
+    for (const auto& fixture : {std::pair{"U00211", L"簡稱"}, std::pair{"U00230", L"痕跡"},
+                                std::pair{"U00230", L"Number Ten"}}) {
+        const auto index = find(fixture.first);
+        std::wstring layout;
+        if (index == SIZE_MAX || !layout_page(s.entries[index].pages[0].text, 52, 4, layout) ||
+            layout.find(fixture.second) == std::wstring::npos) {
+            std::fprintf(stderr, "Protected phrase layout failed for %s\n", fixture.first);
+            return 48;
+        }
+    }
     std::ofstream audit("work/p0/early-pages-layout.tsv");audit<<"uid\tpage\tx\tcapacity\tfits\tlines\n";size_t early_ok=0,early_bad=0;
     for(const auto& e:s.entries)if(e.uid>="U00208"&&e.uid<="U00242")for(size_t p=0;p<e.pages.size();++p){
         bool named=e.header_words&&p==0;int x=e.header_words?72:52;std::wstring layout;bool ok=layout_page(e.pages[p].text,x,4-named,layout);
