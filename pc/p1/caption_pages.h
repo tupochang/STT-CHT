@@ -8,7 +8,7 @@ inline std::vector<Page> pages(const std::vector<unsigned char>& raw,const std::
     while(true){auto end=text.find(L"<p>",start);translations.push_back(text.substr(start,end==std::wstring::npos?end:end-start));if(end==std::wstring::npos)break;start=end+3;}
     std::vector<Page> out;size_t begin=header;
     for(size_t i=header;i<raw.size()/2;++i){unsigned code=raw[i*2]|raw[i*2+1]<<8;
-        if(code>=0xff00&&code!=0xfffb&&code!=0xfffc&&code!=0xfffd&&code!=0xfffe)throw std::runtime_error("Unsupported page control");
+        if(code>=0xff00&&!(code>=0xff01&&code<=0xff04)&&code!=0xfffb&&code!=0xfffc&&code!=0xfffd&&code!=0xfffe)throw std::runtime_error("Unsupported page control");
         if(code==0xfffc||code==0xfffd||code==0xfffe){
             if(out.size()>=translations.size())throw std::runtime_error("Page count differs");
             Page p;p.begin=begin;p.end=i+1;p.text=translations[out.size()];p.raw.assign(raw.begin()+begin*2,raw.begin()+(i+1)*2);
@@ -28,11 +28,11 @@ inline size_t page_index(const std::vector<Page>& pages,size_t words,unsigned mo
 }
 inline std::vector<size_t> page_timeline(const Page& page,const std::wstring& text){
     try{return timeline(page.raw,text);}catch(const std::runtime_error&){}
-    size_t total=0;for(size_t i=0;i<page.raw.size();i+=2)if((page.raw[i]|page.raw[i+1]<<8)<0xff00)++total;
+    size_t total=0;for(size_t i=0;i<page.raw.size();i+=2){unsigned c=page.raw[i]|page.raw[i+1]<<8;if(c<0xff00||(c>=0xff01&&c<=0xff04))++total;}
     if(!total)throw std::runtime_error("Empty source page");
     std::vector<size_t> out{0};size_t consumed=0;
     for(size_t i=0;i<page.raw.size();i+=2){unsigned c=page.raw[i]|page.raw[i+1]<<8;
-        if(c<0xff00)++consumed;
+        if(c<0xff00||(c>=0xff01&&c<=0xff04))++consumed;
         size_t n=c==0xfffd?text.size():consumed*text.size()/total;
         if(n>0&&n<text.size()&&text[n-1]>=0xd800&&text[n-1]<=0xdbff)--n;
         out.push_back(n);

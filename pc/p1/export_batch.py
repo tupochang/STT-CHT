@@ -60,7 +60,7 @@ def main():
         uid = row['uid']; text = translations.get(uid, '')
         reason = None
         if not text.strip(): reason = 'missing_translation'
-        elif re.search(r'[<>\[\]{}]',text.replace('<p>','')): reason = 'translation_controls_or_variables'
+        elif re.search(r'[<>\[\]{}]',re.sub(r'\[HERO[1-4]\]','',text.replace('<p>',''))): reason = 'translation_controls_or_variables'
         elif row['term'] not in ('FFFD','FFFE'): reason = 'unsupported_terminal'
         if reason:
             skipped.append({'id':row['id'],'uid':uid,'reason':reason}); continue
@@ -76,51 +76,71 @@ def main():
             header = words.index(0xff30)+1
             if header<len(words) and words[header]==0xfffb: header+=1
         body = words[header:]
-        if not reason and any(c>=0xff00 and c not in (0xfffb,0xfffc,0xfffd,0xfffe) for c in body): reason = 'source_controls'
+        if not reason and any(c>=0xff00 and c not in (0xff01,0xff02,0xff03,0xff04,0xfffb,0xfffc,0xfffd,0xfffe) for c in body): reason = 'source_controls'
         elif not reason and len(text.split('<p>')) != body.count(0xfffc)+1: reason = 'page_count_mismatch'
+        elif not reason and any(text.count(f'[HERO{i}]')!=body.count(0xff00+i) for i in range(1,5)): reason='variable_count_mismatch'
+        if not reason:
+            source_pages=[[]]
+            for code in body:
+                if code==0xfffc:source_pages.append([])
+                else:source_pages[-1].append(code)
+            if any(part.count(f'[HERO{i}]')!=source_page.count(0xff00+i) for part,source_page in zip(text.split('<p>'),source_pages) for i in range(1,5)):reason='variable_page_mismatch'
         if reason:
             skipped.append({'id':row['id'],'uid':uid,'reason':reason}); continue
         raw = struct.pack(f'<{len(words)}H',*words)
-        if start<16:
+        if start<128:
             skipped.append({'id':row['id'],'uid':uid,'reason':'insufficient_source_context'}); continue
-        row = dict(row, context=data[start-16:start], header=header)
+        row = dict(row, context=data[start-128:start], header=header)
         if len(raw)<8:
             skipped.append({'id':row['id'],'uid':uid,'reason':'short_ambiguous_signature'}); continue
         groups.setdefault(raw,{}).setdefault(text,[]).append(row)
     records = []
     for raw,variants in groups.items():
-        if len(variants)>1:
-            for rr in variants.values():
-                skipped.extend({'id':r['id'],'uid':r['uid'],'reason':'conflicting_translation_for_signature'} for r in rr)
-            continue
-        text,rr = next(iter(variants.items())); uid = rr[0]['uid']
-        records.append((uid,raw,text,sorted({r['context'] for r in rr}),rr[0]['header']))
-        eligible.extend({'id':r['id'],'uid':r['uid']} for r in rr)
+        contexts={}
+        for text,rr in variants.items():
+            for r in rr:contexts.setdefault(r['context'],set()).add(text)
+        for text,rr in variants.items():
+            good=[]
+            for r in rr:
+                if len(contexts[r['context']])>1:skipped.append({'id':r['id'],'uid':r['uid'],'reason':'conflicting_translation_for_context'})
+                else:good.append(r)
+            if not good:continue
+            uid=good[0]['uid'];records.append((uid,raw,text,sorted({r['context'] for r in good}),good[0]['header']))
+            eligible.extend({'id':r['id'],'uid':r['uid']} for r in good)
     records.sort()
     out = ROOT/'pc/p1/data'; out.mkdir(parents=True,exist_ok=True)
-    pack = bytearray(b'STTB0004'+struct.pack('<I',len(records)))
+    pack = bytearray(b'STTB0005'+struct.pack('<I',len(records)))
     for uid,raw,text,contexts,header in records:
         u,t = uid.encode(),text.encode('utf-8')
         pack += struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
         pack += struct.pack('<II',header,len(contexts))+b''.join(contexts)
     (out/'dialogues.bin').write_bytes(pack)
+    import sys
+    sys.path.insert(0,str(ROOT/'reference/english-toolchain/tools'))
+    from kana_table import TABLE
+    mapping={int(k):v for k,v in json.loads((ROOT/'reference/english-toolchain/work/font/variant_maps.json').read_text(encoding='utf-8'))['11'].items()}
+    mapping.update(TABLE)
+    chars=sorted((k,ord(v)) for k,v in mapping.items() if 0<=k<0xff00 and len(v)==1 and ord(v)<=0xffff)
+    (out/'name-glyphs.bin').write_bytes(struct.pack('<I',len(chars))+b''.join(struct.pack('<HI',k,v) for k,v in chars))
     # Preserve the old, strict single-page data for both earlier executables.
     def single_page(r):
         _,raw,text,_,header=r
         words=struct.unpack(f'<{len(raw)//2}H',raw)[header:]
-        return 0xfffc not in words and '<p>' not in text and text.count('\n')==words.count(0xfffb) and text.count('\n')+bool(header)<4
-    previous=[r for r in records if single_page(r)]
+        return not any(c in words for c in (0xff01,0xff02,0xff03,0xff04,0xfffc)) and '<p>' not in text and text.count('\n')==words.count(0xfffb) and text.count('\n')+bool(header)<4
+    raw_variants={}
+    for r in records:raw_variants.setdefault(r[1],set()).add(r[2])
+    previous=[r for r in records if single_page(r) and len(raw_variants[r[1]])==1]
     prior=bytearray(b'STTB0003'+struct.pack('<I',len(previous)))
     for uid,raw,text,contexts,header in previous:
         u,t=uid.encode(),text.encode('utf-8');prior+=struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
-        prior+=struct.pack('<II',header,len(contexts))+b''.join(contexts)
+        prior+=struct.pack('<II',header,len(contexts))+b''.join(c[-16:] for c in contexts)
     (out/'dialogues-v3.bin').write_bytes(prior)
     legacy_records=[r for r in previous if not r[4]]
     legacy=bytearray(b'STTB0002'+struct.pack('<I',len(legacy_records)))
     for uid,raw,text,contexts,header in legacy_records:
         u,t=uid.encode(),text.encode('utf-8')
         legacy+=struct.pack('<III',len(u),len(raw),len(t))+u+raw+t
-        legacy+=struct.pack('<I',len(contexts))+b''.join(contexts)
+        legacy+=struct.pack('<I',len(contexts))+b''.join(c[-16:] for c in contexts)
     (out/'dialogues-legacy.bin').write_bytes(legacy)
     report = {'workbook_sha256':hashlib.sha256((ROOT/'334.xlsx').read_bytes()).hexdigest(),
         'records':len(records),'eligible_occurrences':len(eligible),'eligible_units':len({r['uid'] for r in eligible}),

@@ -28,6 +28,7 @@ void stt_pc_controls_frame(void);
 #include "caption_layout.h"
 #include "caption_pages.h"
 #include "caption_reflow.h"
+#include "caption_names.h"
 
 namespace {
 struct Entry {std::string uid;std::vector<unsigned char> raw;std::wstring text;std::vector<size_t> timeline;std::vector<std::vector<unsigned char>> contexts;uint32_t header_words=0;std::vector<stt_caption::Page> pages;};
@@ -51,6 +52,9 @@ struct State {
     std::unordered_set<std::string> rejected;
     float tint[3]={1,1,1};
     unsigned fixed_slot=0;
+    std::unordered_map<uint16_t,wchar_t> name_glyphs;
+    std::vector<size_t> source_offsets;
+    std::wstring name_key;
 };
 State& primary_state() { static State s; return s; }
 State& extra_state(unsigned slot){static State extra[2];return extra[slot-1];}
@@ -78,8 +82,8 @@ uint64_t prefix(const std::vector<unsigned char>& raw) {
     uint64_t key=0;for(unsigned i=0;i<8;++i)key|=uint64_t(raw[i])<<(8*i);return key;
 }
 bool match_entry(uint32_t base,const Entry& e){
-    if(base<16 || !match(base,e.raw))return false;
-    for(const auto& context:e.contexts)if(match(base-16,context))return true;
+    if(base<128 || !match(base,e.raw))return false;
+    for(const auto& context:e.contexts)if(match(base-uint32_t(context.size()),context))return true;
     return false;
 }
 bool fits(const std::wstring& text,int x) {
@@ -100,12 +104,14 @@ void load(State& s) {
     s.loaded = true;
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr,exe,MAX_PATH);
     std::wstring dir(exe);dir.resize(dir.find_last_of(L"\\/")+1);
-    auto batch_path=std::filesystem::path(dir+L"pc-data-v4\\dialogues.bin");
+    auto batch_path=std::filesystem::path(dir+L"pc-data-v5\\dialogues.bin");
     if(!std::filesystem::exists(batch_path))batch_path=std::filesystem::path(dir+L"p1-data\\dialogues.bin");
     std::ifstream batch(batch_path,std::ios::binary);
     if(batch) {
         char magic[8];uint32_t count=0;batch.read(magic,8);batch.read(reinterpret_cast<char*>(&count),4);
-        if(!batch || std::string(magic,8)!="STTB0004"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
+        if(!batch || std::string(magic,8)!="STTB0005"||count>50000){std::fprintf(stderr,"STT_P1 invalid batch header\n");return;}
+        std::ifstream names(batch_path.parent_path()/L"name-glyphs.bin",std::ios::binary);uint32_t name_count=0;names.read(reinterpret_cast<char*>(&name_count),4);
+        if(name_count<=65536)for(uint32_t j=0;j<name_count;++j){uint16_t code=0;uint32_t cp=0;names.read(reinterpret_cast<char*>(&code),2);names.read(reinterpret_cast<char*>(&cp),4);if(!names||cp>65535)break;s.name_glyphs[code]=wchar_t(cp);}
         for(uint32_t i=0;i<count;++i){uint32_t n=0,r=0,t=0;
             batch.read(reinterpret_cast<char*>(&n),4);batch.read(reinterpret_cast<char*>(&r),4);batch.read(reinterpret_cast<char*>(&t),4);
             if(!batch||n>32||r<8||r>2048||r%2||t>16384){s.entries.clear();s.index.clear();return;}
@@ -113,7 +119,7 @@ void load(State& s) {
             batch.read(e.uid.data(),n);batch.read(reinterpret_cast<char*>(e.raw.data()),r);batch.read(utf8.data(),t);
             uint32_t contexts=0;batch.read(reinterpret_cast<char*>(&e.header_words),4);batch.read(reinterpret_cast<char*>(&contexts),4);
             if(!batch||contexts==0||contexts>50000){s.entries.clear();s.index.clear();return;}
-            for(uint32_t j=0;j<contexts;++j){std::vector<unsigned char> c(16);batch.read(reinterpret_cast<char*>(c.data()),16);e.contexts.push_back(std::move(c));}
+            for(uint32_t j=0;j<contexts;++j){std::vector<unsigned char> c(128);batch.read(reinterpret_cast<char*>(c.data()),128);e.contexts.push_back(std::move(c));}
             int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,utf8.data(),t,nullptr,0);
             if(!batch||size<=0){s.entries.clear();s.index.clear();return;}
             e.text.resize(size);MultiByteToWideChar(CP_UTF8,0,utf8.data(),t,e.text.data(),size);
@@ -197,6 +203,7 @@ int refresh_slot(CPUState*) {
             if(!peek(table,flags)||!(flags&1)||!peek(table+0x10,modeWord)||!peek(table+0x20,ptr))continue;
             unsigned mode=modeWord&255;
             if(mode!=0 && mode!=1 && mode!=4 && mode!=5)continue;
+            auto name_pointer=stt_caption::name_pointer(peek,table,ptr);ptr=name_pointer.source;
             if(ptr<0x80010000 || ptr>0x80200000)continue;
             uint32_t base=0;
             size_t selected=SIZE_MAX;
@@ -228,24 +235,28 @@ int refresh_slot(CPUState*) {
             uint32_t xy=0;peek(table+4,xy);int x=static_cast<int16_t>(xy>>16);
             peek(table+8,xy);int y=static_cast<int16_t>(xy&65535);
             size_t page=0,local_words=sample.words;bool named=false;
+            stt_caption::ResolvedPage resolved;
             if(selected<s.entries.size()){
                 const auto& e=s.entries[selected];page=stt_caption::page_index(e.pages,sample.words,mode);
                 local_words=sample.words>e.pages[page].begin?sample.words-e.pages[page].begin:0;
                 named=e.header_words&&page==0;if(named)y+=16;
+                if(!stt_caption::resolve_page(e.pages[page],peek,s.name_glyphs,resolved)){
+                    std::string key=e.uid+":name";if(s.rejected.size()<512&&s.rejected.insert(key).second)std::fprintf(stderr,"STT_P1 rejected %s reason=name_unavailable\n",e.uid.c_str());continue;
+                }
             }
-            bool changed=!s.active || s.base!=base || s.entry_index!=selected || s.owner_index!=slot || s.page_index!=page || s.text_x!=x || s.text_y!=y;
+            bool changed=!s.active || s.base!=base || s.entry_index!=selected || s.owner_index!=slot || s.page_index!=page || s.text_x!=x || s.text_y!=y || s.name_key!=resolved.key;
             if(selected<s.entries.size() && (!s.renderer_ready || !stt_caption::valid_text_origin(x,y,1)))continue;
             if(changed) {
                 if(selected<s.entries.size()){
                     const auto& e=s.entries[selected];std::wstring laid_out;
                     unsigned max_lines=std::min(unsigned(4-named),unsigned((240-y)/16));
-                    std::string key=e.uid+":"+std::to_string(page)+":"+std::to_string(x)+":"+std::to_string(max_lines);
+                    std::string key=e.uid+":"+std::to_string(page)+":"+std::to_string(x)+":"+std::to_string(max_lines)+":"+std::to_string(std::hash<std::wstring>{}(resolved.key));
                     if(s.rejected.count(key))continue;
-                    if(!layout_page(e.pages[page].text,x,max_lines,laid_out)){
+                    if(!layout_page(resolved.page.text,x,max_lines,laid_out)){
                         if(s.rejected.size()<512&&s.rejected.insert(key).second)std::fprintf(stderr,"STT_P1 rejected %s page=%zu reason=page_capacity x=%d y=%d lines=%u\n",e.uid.c_str(),page,x,y,max_lines);
                         continue;
                     }
-                    s.signature=e.raw;s.caption=laid_out;s.timeline=stt_caption::page_timeline(e.pages[page],laid_out);
+                    s.signature=e.raw;s.caption=laid_out;s.timeline=stt_caption::page_timeline(resolved.page,laid_out);s.source_offsets=resolved.offsets;s.name_key=resolved.key;
                 }
                 s.pixels.clear();
                 s.lines=1+int(std::count(s.caption.begin(),s.caption.end(),L'\n'));s.entry_index=selected;s.page_index=page;
@@ -253,6 +264,10 @@ int refresh_slot(CPUState*) {
                 s.in_frame=s.renderer_ready && stt_caption::valid_text_origin(x,y,s.lines);
                 std::fprintf(stderr,"STT_P1 layout slot=%u x=%d y=%d in_frame=%d renderer=%d\n",slot,x,y,s.in_frame,s.renderer_ready);
                 if(selected<s.entries.size())std::fprintf(stderr,"STT_P1 matched %s base=%08x page=%zu/%zu reflow=%d\n",s.entries[selected].uid.c_str(),base,page+1,s.entries[selected].pages.size(),s.caption!=s.entries[selected].pages[page].text);
+            }
+            if(selected<s.entries.size()){
+                if(local_words>=s.source_offsets.size())continue;local_words=s.source_offsets[local_words];
+                if(name_pointer.variable>=0 && sample.words>=s.entries[selected].pages[page].begin)local_words+=name_pointer.typed;
             }
             if(local_words>=s.timeline.size())continue;
             size_t visible=s.timeline[local_words];
@@ -301,6 +316,7 @@ int glyph(CPUState* cpu) {
         suppress=s.active&&s.in_frame&&s.renderer_ready && (cpu->gpr[21]&255)==s.owner_index;
         if(suppress && s.entry_index<s.entries.size() && s.entries[s.entry_index].header_words){
             uint32_t ptr=0;peek(0x800c6b88+s.owner_index*44+0x20,ptr);
+            ptr=stt_caption::name_pointer(peek,0x800c6b88+s.owner_index*44,ptr).source;
             suppress=ptr>=s.base+s.entries[s.entry_index].header_words*2;
         }}
     uint32_t primitive=cpu->gpr[4],offset=0;
